@@ -52,11 +52,13 @@ describe("migraciones", () => {
     );
 
     expect(rows.map((r) => r.table_name)).toEqual([
+      "campaign",
       "event",
       "ledger_entry",
       "membership",
       "merchant",
       "merchant_location",
+      "notification",
       "pass_instance",
       "person",
       "product",

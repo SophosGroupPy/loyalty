@@ -211,7 +211,7 @@ describe("emisión con Google configurado", () => {
     expect(stored[0]?.last_synced_balance).toBe(0);
   });
 
-  it("empuja el saldo nuevo al pase solo, y pide notificar", async () => {
+  it("empuja el saldo nuevo al pase en silencio, sin gastar cupo de avisos", async () => {
     const membershipId = await seedCard();
     await call("POST", "/v1/passes", { merchant: "r-1", membership: { id: membershipId } });
 
@@ -235,10 +235,12 @@ describe("emisión con Google configurado", () => {
     });
 
     const patch = fake.calls.find((c) => c.method === "PATCH");
-    expect(patch?.body).toMatchObject({
-      loyaltyPoints: { balance: { int: 12 } },
-      notifyPreference: expect.any(String),
-    });
+    expect(patch?.body).toMatchObject({ loyaltyPoints: { balance: { int: 12 } } });
+
+    // Sin `notifyPreference`: mantener la tarjeta al día es silencioso. Si esto
+    // notificara, seis consumos en una noche gastarían el cupo del día entero
+    // sin que el despachador —el único que ve el cupo— lo hubiera decidido.
+    expect(patch?.body).not.toHaveProperty("notifyPreference");
   });
 
   it("no vuelve a sincronizar si el pase ya está al día", async () => {
@@ -395,6 +397,7 @@ describe("resiliencia ante una caída de Google", () => {
       enabled: true,
       issueGooglePass: vi.fn(),
       syncGooglePass: vi.fn().mockRejectedValue(new Error("boom")),
+      sendMessage: vi.fn().mockRejectedValue(new Error("boom")),
       pendingSync: vi.fn().mockResolvedValue([]),
     };
     await boot({ passService: explota });

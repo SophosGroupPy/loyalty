@@ -100,7 +100,37 @@ export const membership = pgTable("membership", {
   balance: integer("balance").notNull(),
   tier: text("tier"),
   status: text("status").$type<"active" | "opted_out" | "deleted">().notNull(),
+  /** Canales de los que el cliente se dio de baja, sin dejar el programa. */
+  notificationOptout: text("notification_optout").array().notNull(),
   issuedAt: timestamp("issued_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const campaign = pgTable("campaign", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  merchantId: uuid("merchant_id").notNull(),
+  header: text("header").notNull(),
+  body: text("body").notNull(),
+  createdBy: text("created_by").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const notification = pgTable("notification", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  membershipId: uuid("membership_id").notNull(),
+  merchantId: uuid("merchant_id").notNull(),
+  channel: text("channel").$type<"wallet" | "whatsapp" | "webpush">().notNull(),
+  kind: text("kind").notNull(),
+  priority: integer("priority").notNull(),
+  dedupeKey: text("dedupe_key").notNull(),
+  header: text("header"),
+  body: text("body"),
+  campaignId: uuid("campaign_id"),
+  scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+  suppressedReason: text("suppressed_reason"),
+  supersededBy: uuid("superseded_by"),
+  lastError: text("last_error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const event = pgTable("event", {
@@ -175,4 +205,6 @@ export const schema = {
   reward,
   ledgerEntry,
   redemption,
+  campaign,
+  notification,
 };

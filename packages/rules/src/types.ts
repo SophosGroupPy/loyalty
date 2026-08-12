@@ -80,6 +80,29 @@ interface BaseConfig {
    * Afecta al tope diario y a la agrupación por día.
    */
   dayBoundaryHour?: number;
+  /** Preferencias de notificación. Las lee el despachador, no el motor. */
+  notifications?: NotificationSettings;
+}
+
+export interface NotificationSettings {
+  /**
+   * Franja en la que no se manda nada, en horas locales del programa.
+   * `{ from: 22, to: 9 }` significa desde las 22 hasta las 9 del día siguiente.
+   *
+   * **Es configurable por programa a propósito.** Para un restaurante el horario
+   * inútil es la madrugada; para un boliche la madrugada es justamente cuando
+   * tiene sentido escribir. Con una sola política fija, uno de los dos verticales
+   * queda roto.
+   */
+  quietHours?: { from: number; to: number };
+  /**
+   * Minutos que se espera antes de mandar un aviso de saldo, agrupando lo que
+   * pase en el medio. Tres consumos en la misma noche mandan un solo aviso con
+   * el saldo final. Por defecto 15.
+   */
+  coalesceMinutes?: number;
+  /** Avisos automáticos que el comercio apagó. */
+  disabledKinds?: string[];
 }
 
 export interface PointsConfig extends BaseConfig {

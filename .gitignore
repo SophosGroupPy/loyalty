@@ -2,8 +2,13 @@ node_modules/
 dist/
 .env
 .env.local
+!.env.example
 *.tsbuildinfo
 .DS_Store
+
+# Claves de service account de GCP. Nunca al repo.
+*service-account*.json
+gcp-*.json
 
 # Certificados y claves privadas de Pass Type IDs — NUNCA al repo.
 # En producción viven en el gestor de secretos, cifrados.

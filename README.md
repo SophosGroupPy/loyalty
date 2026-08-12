@@ -16,7 +16,8 @@ Plan completo de arquitectura: `~/.claude/plans/estamos-desarrollando-un-program
 |---|---|---|
 | 1 | Motor, ledger, API, aislamiento multi-tenant, aviso al POS | ✅ |
 | 2 | Google Wallet: emisión, sincronización, geocercas, diseño | ✅ |
-| 2 | Alta con OTP, consola embebible, despachador de notificaciones | pendiente |
+| 2 | Despachador de notificaciones: cupo, prioridad, agrupamiento, campañas | ✅ |
+| 2 | Alta con OTP, consola embebible | pendiente |
 | 3 | Integración con ElMenu y Noctu | pendiente |
 | 4 | Apple Wallet (bloqueada por el enrollment) | pendiente |
 
@@ -56,7 +57,7 @@ migraciones.
 | `DATABASE_URL` | en producción | Postgres. Sin ella, PGlite en memoria. |
 | `JWT_SIGNING_KEY` | en producción | Firma de los access token. Si cambia, todos los productos integrados pierden sus tokens. |
 | `PORT` | no | Por defecto 3001. |
-| `GOOGLE_WALLET_ISSUER_ID` | para emitir | Issuer que Google asigna a Sophos. |
+| `GOOGLE_WALLET_ISSUER_ID` | para emitir | Issuer de Sophos: `3388000000023171859`. |
 | `GOOGLE_WALLET_SA_EMAIL` | para emitir | Service account de GCP. |
 | `GOOGLE_WALLET_SA_PRIVATE_KEY` | para emitir | Clave privada PEM. Acepta los `\n` escapados del JSON de GCP. |
 | `GOOGLE_WALLET_ORIGINS` | no | Dominios autorizados a mostrar el botón de guardado. |
@@ -93,6 +94,16 @@ Están cubiertas por tests; si alguna se rompe, la suite falla.
    registrado en `pass_instance` para que la reconciliación lo levante después
    (`GET /v1/passes/pending-sync`).
 
+7. **Ninguna notificación se pierde en silencio.** Cada intento deja una fila:
+   la que se manda y también las que se agrupan o se descartan, con el motivo.
+   Es lo que permite responderle a un comercio por qué su campaña llegó a 453
+   de 500 en vez de mostrarle un "enviado" plano.
+
+8. **Una campaña nunca puede dejar sin aviso a un cliente que consume.** Las
+   campañas tienen un cupo menor que el total (`CAMPAIGN_BUDGET`), reservando
+   lugar para lo transaccional. La prioridad sola no alcanza: solo ordena lo que
+   está pendiente al mismo tiempo, y una notificación ya enviada no se devuelve.
+
 ## Decisiones que conviene conocer antes de tocar el código
 
 - **Los multiplicadores no se acumulan entre sí: se aplica el mayor.** "Jueves
@@ -110,6 +121,16 @@ Están cubiertas por tests; si alguna se rompe, la suite falla.
 - **Los eventos que no acumulan no ensucian el ledger**, pero dejan su traza en
   `event.result`. Es lo que permite responder "¿por qué este consumo no sumó
   puntos?" sin adivinar.
+
+- **La notificación guarda una intención, no un texto.** El cuerpo se arma al
+  despachar, con el saldo vivo, así tres consumos agrupados muestran el total
+  final y no el de la primera compra. Las campañas son la excepción, porque el
+  texto lo escribió el comercio.
+
+- **Sincronizar el pase y notificar son cosas distintas.** El pase se actualiza
+  en silencio tras cada acumulación para que la tarjeta esté al día al instante;
+  avisarle al cliente consume un cupo escaso y lo decide el despachador. Si el
+  sync notificara solo, una noche movida agotaría el cupo del día.
 
 - **El perfil del cliente vive en `membership`, no en `person`.** Que el bar
   edite el nombre de un cliente no puede tocar su ficha en el restaurante.
@@ -132,6 +153,10 @@ PUT  /v1/design                   diseño de la tarjeta (logo, colores, etiqueta
 POST /v1/locations                geocercas del comercio (máximo 10)
 POST /v1/passes                   emite la tarjeta y devuelve el save link
 GET  /v1/passes/pending-sync      pases desfasados: la cola de reconciliación
+GET  /v1/campaigns/reach          alcance real antes de mandar una campaña
+POST /v1/campaigns                crea la campaña y la encola a toda la base
+GET  /v1/campaigns/:id/report     entregados, pendientes y suprimidos con motivo
+POST /v1/notifications/dispatch   corre una pasada del despachador
 GET  /health
 ```
 

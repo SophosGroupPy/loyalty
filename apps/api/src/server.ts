@@ -24,6 +24,10 @@ import {
 } from "./auth.js";
 import { applyEvent, redeem } from "./ledger.js";
 import { enroll, lookup, normalizePhone } from "./memberships.js";
+import { campaignReport, dispatchDue, enqueue } from "./notifications/dispatcher.js";
+import { CAMPAIGN_BUDGET } from "./notifications/policy.js";
+import { createConsoleSender, createWalletSender } from "./notifications/senders.js";
+import type { NotificationSender } from "./notifications/dispatcher.js";
 import { createPassService, type PassService } from "./passes.js";
 import type { GoogleWalletConfig } from "@sophos/passes";
 
@@ -43,6 +47,8 @@ export interface ServerOptions {
   fetchImpl?: typeof fetch;
   /** Permite sustituir el servicio completo en los tests. */
   passService?: PassService;
+  /** Canal de envío. Por defecto: wallet si hay credenciales, consola si no. */
+  notificationSender?: NotificationSender;
 }
 
 const EVENT_TYPES = [
@@ -58,6 +64,13 @@ export function createServer(opts: ServerOptions): FastifyInstance {
 
   const passes =
     opts.passService ?? createPassService(db, opts.googleWallet, opts.fetchImpl);
+
+  // Sin credenciales de wallet el despachador sigue funcionando entero contra la
+  // consola: se puede verificar cupo, prioridad y agrupamiento sin depender de
+  // que exista el Issuer.
+  const sender =
+    opts.notificationSender ??
+    (passes.enabled ? createWalletSender(passes) : createConsoleSender());
 
   /**
    * Empuja el saldo al pase sin bloquear la respuesta ni poder romperla.
@@ -394,10 +407,47 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       ...(parsed.data.payload ? { payload: parsed.data.payload } : {}),
     });
 
-    // Solo se sincroniza si el saldo efectivamente cambió: un reintento o un
-    // evento topeado no tienen nada que empujar, y cada PATCH innecesario gasta
-    // cupo de notificaciones del cliente.
-    if (!result.duplicate && result.amount > 0) syncPassInBackground(membershipId);
+    // Solo se toca el pase si el saldo efectivamente cambió: un reintento o un
+    // evento topeado no tienen nada que empujar.
+    if (!result.duplicate && result.amount > 0) {
+      // El pase se actualiza en silencio para que la tarjeta esté al día al
+      // instante; el aviso al cliente lo decide el despachador, que es el único
+      // que ve el cupo diario y puede agrupar varios consumos en uno.
+      syncPassInBackground(membershipId);
+
+      void enqueue(db, {
+        membershipId,
+        merchantId: merchant.id,
+        kind: "balance_changed",
+      }).catch((error) => {
+        app.log.error({ err: error, membershipId }, "no se pudo encolar el aviso de saldo");
+      });
+
+      if (result.tier) {
+        void enqueue(db, {
+          membershipId,
+          merchantId: merchant.id,
+          kind: "tier_changed",
+        }).catch(() => {});
+      }
+
+      // Un beneficio recién desbloqueado es el aviso que más visitas genera, así
+      // que se dispara solo en el cruce del umbral y no en cada acumulación
+      // posterior — si no, el cliente recibiría "ya podés canjear" para siempre.
+      const unlocked = await rows<{ count: number }>(
+        db.drizzle,
+        sql`SELECT count(*)::int AS count FROM reward
+            WHERE merchant_id = ${merchant.id} AND status = 'active'
+              AND cost <= ${result.balance} AND cost > ${result.balance - result.amount}`,
+      );
+      if ((unlocked[0]?.count ?? 0) > 0) {
+        void enqueue(db, {
+          membershipId,
+          merchantId: merchant.id,
+          kind: "reward_unlocked",
+        }).catch(() => {});
+      }
+    }
 
     // Un reintento devuelve 200 con el resultado original; el primer envío, 201.
     return reply.code(result.duplicate ? 200 : 201).send(result);
@@ -561,6 +611,125 @@ export function createServer(opts: ServerOptions): FastifyInstance {
   /** Pases cuyo saldo quedó atrás del real. Es la cola de reconciliación. */
   app.get("/v1/passes/pending-sync", async (_request, reply) => {
     return reply.send({ passes: await passes.pendingSync() });
+  });
+
+  // --------------------------------------------------------------------------
+  // Campañas
+  // --------------------------------------------------------------------------
+
+  /**
+   * Alcance real de una campaña, antes de mandarla.
+   *
+   * Es el medidor en vivo que ve el comercio mientras escribe: "de tus 500
+   * clientes, hoy le llega a 453". Sin esto asume alcance total y toma
+   * decisiones sobre un número falso.
+   */
+  async function reachFor(merchantId: string) {
+    const found = await rows<{ total: number; reachable: number }>(
+      db.drizzle,
+      sql`SELECT
+            count(*) FILTER (WHERE m.status = 'active')::int AS total,
+            count(*) FILTER (
+              WHERE m.status = 'active'
+                AND NOT ('wallet' = ANY (m.notification_optout))
+                AND (SELECT count(*) FROM notification n
+                     WHERE n.membership_id = m.id AND n.channel = 'wallet'
+                       AND n.sent_at > now() - interval '24 hours') < ${CAMPAIGN_BUDGET}
+            )::int AS reachable
+          FROM membership m
+          WHERE m.merchant_id = ${merchantId}`,
+    );
+
+    const total = found[0]?.total ?? 0;
+    const reachable = found[0]?.reachable ?? 0;
+    return { total, reachable, unreachable: total - reachable };
+  }
+
+  app.get("/v1/campaigns/reach", async (request, reply) => {
+    const parsed = z
+      .object({ merchant: z.string().min(1) })
+      .safeParse(request.query);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await withMerchant(request, reply, parsed.data.merchant);
+    if (!merchant) return;
+
+    return reply.send(await reachFor(merchant.id));
+  });
+
+  const campaignBody = z.object({
+    merchant: z.string().min(1),
+    header: z.string().min(1).max(60),
+    body: z.string().min(1).max(300),
+    createdBy: z.string().min(1),
+  });
+
+  app.post("/v1/campaigns", async (request, reply) => {
+    const parsed = campaignBody.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await withMerchant(request, reply, parsed.data.merchant);
+    if (!merchant) return;
+
+    const created = await rows<{ id: string }>(
+      db.drizzle,
+      sql`INSERT INTO campaign (merchant_id, header, body, created_by)
+          VALUES (${merchant.id}, ${parsed.data.header}, ${parsed.data.body},
+                  ${parsed.data.createdBy})
+          RETURNING id`,
+    );
+    const campaignId = created[0]?.id;
+    if (!campaignId) throw new Error("no se pudo crear la campaña");
+
+    const audience = await rows<{ id: string }>(
+      db.drizzle,
+      sql`SELECT id FROM membership WHERE merchant_id = ${merchant.id} AND status = 'active'`,
+    );
+
+    // Se encola una por cliente y el despachador decide cuáles entran. Encolar
+    // todo y reportar después es lo que permite distinguir "no le mandamos" de
+    // "no le entró", que para el comercio son cosas muy distintas.
+    for (const member of audience) {
+      await enqueue(db, {
+        membershipId: member.id,
+        merchantId: merchant.id,
+        kind: "campaign",
+        campaignId,
+        header: parsed.data.header,
+        body: parsed.data.body,
+      });
+    }
+
+    return reply.code(201).send({ id: campaignId, targeted: audience.length });
+  });
+
+  app.get<{ Params: { id: string } }>("/v1/campaigns/:id/report", async (request, reply) => {
+    const merchantRef = (request.query as { merchant?: string }).merchant;
+    if (!merchantRef) return badRequest(reply, "Falta el parámetro merchant.");
+
+    const merchant = await withMerchant(request, reply, merchantRef);
+    if (!merchant) return;
+
+    const owned = await rows<{ id: string }>(
+      db.drizzle,
+      sql`SELECT id FROM campaign WHERE id = ${request.params.id} AND merchant_id = ${merchant.id}`,
+    );
+    if (!owned[0]) {
+      return reply.code(404).send({ error: "not_found", message: "Campaña inexistente." });
+    }
+
+    return reply.send(await campaignReport(db, request.params.id));
+  });
+
+  /**
+   * Corre una pasada del despachador.
+   *
+   * Se expone como endpoint para poder dispararlo desde un cron o un worker sin
+   * montar todavía la infraestructura de colas. En producción esto lo va a
+   * llamar el worker cada pocos minutos.
+   */
+  app.post("/v1/notifications/dispatch", async (_request, reply) => {
+    return reply.send(await dispatchDue(db, sender));
   });
 
   app.get("/health", async () => ({ status: "ok" }));

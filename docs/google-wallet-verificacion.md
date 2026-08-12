@@ -9,18 +9,37 @@ Este documento es la lista de lo que hay que confirmar el día que exista el
 Issuer. Todos los valores en duda viven en un solo archivo:
 [`packages/passes/src/google/enums.ts`](../packages/passes/src/google/enums.ts).
 
+## Estado del trámite
+
+| | |
+|---|---|
+| Cuenta en Google Pay & Wallet Console | ✅ creada como **Sophos Group** |
+| Merchant ID (Google Pay) | `BCR2DN6D3KFLZNRV` — **no** es el Issuer, no sirve acá |
+| **Issuer ID (Google Wallet)** | ✅ **`3388000000023171859`** |
+| Service account de GCP | ⬜ pendiente |
+| Publishing access | ⬜ **pendiente, y es el que tarda** |
+
+> **La cuenta arranca en demo mode.** Las tarjetas solo las pueden guardar cuentas
+> de Google que estén en la lista de prueba. Para clientes reales hay que pedir
+> **publishing access**, que Google revisa manualmente. Conviene pedirlo cuanto
+> antes: es tiempo de calendario que corre en paralelo al desarrollo, igual que
+> se hizo con Google frente a Apple.
+>
+> Demo mode alcanza para todo lo de esta checklist.
+
 ## Antes de empezar
 
-1. Crear el Issuer en la [Google Wallet Business Console](https://pay.google.com/business/console).
-   Es gratis y no depende del trámite de Apple.
-2. Crear una service account en GCP con el rol de Wallet Object Issuer y
+1. Crear una service account en GCP con el rol de Wallet Object Issuer y
    descargar la clave JSON.
-3. Autorizar la service account en la consola de Wallet (Users → Invite).
-4. Configurar el entorno:
+2. **Invitarla en Wallet Console → Users.** Es el paso que más se olvida: sin
+   esta invitación la API responde 403 y el error no menciona que falta.
+3. Agregar tu cuenta de Google a la lista de prueba, para poder guardar la
+   primera tarjeta en tu propio teléfono.
+4. Configurar el entorno (o copiar `.env.example` a `.env.local`):
 
 ```bash
-export GOOGLE_WALLET_ISSUER_ID="3388000000012345678"
-export GOOGLE_WALLET_SA_EMAIL="loyalty@tu-proyecto.iam.gserviceaccount.com"
+export GOOGLE_WALLET_ISSUER_ID="3388000000023171859"
+export GOOGLE_WALLET_SA_EMAIL="$(jq -r .client_email clave.json)"
 export GOOGLE_WALLET_SA_PRIVATE_KEY="$(jq -r .private_key clave.json)"
 export GOOGLE_WALLET_ORIGINS="https://tarjeta.sophosgroup.com.py"
 ```

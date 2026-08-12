@@ -14,6 +14,7 @@ export type {
   EarnTrace,
   EventType,
   LoyaltyEvent,
+  NotificationSettings,
   PointsConfig,
   ProgramConfig,
   StampsConfig,

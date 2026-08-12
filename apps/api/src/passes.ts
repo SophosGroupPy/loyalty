@@ -37,7 +37,21 @@ export interface PassService {
   /** `false` cuando no hay credenciales de Google configuradas. */
   readonly enabled: boolean;
   issueGooglePass(membershipId: string, merchantId: string): Promise<string>;
-  syncGooglePass(membershipId: string): Promise<SyncOutcome>;
+  /**
+   * Empuja el saldo al pase.
+   *
+   * **No notifica por defecto**, y es deliberado: mantener la tarjeta al día es
+   * una operación silenciosa que corre en cada acumulación, mientras que avisarle
+   * al cliente consume un cupo escaso que administra el despachador. Si esto
+   * notificara solo, seis consumos en una noche gastarían el cupo del día entero
+   * sin que nadie lo decidiera.
+   */
+  syncGooglePass(membershipId: string, options?: { notify?: boolean }): Promise<SyncOutcome>;
+  /** Manda un mensaje visible al pase. Es la vía de las notificaciones. */
+  sendMessage(
+    membershipId: string,
+    message: { id: string; header: string; body: string },
+  ): Promise<void>;
   pendingSync(limit?: number): Promise<{ membershipId: string; drift: number }[]>;
 }
 
@@ -197,7 +211,7 @@ export function createPassService(
      * Nunca lanza: un fallo queda registrado en `pass_instance.last_error` y el
      * desfasaje se detecta comparando `last_synced_balance` con el saldo real.
      */
-    async syncGooglePass(membershipId) {
+    async syncGooglePass(membershipId, options = {}) {
       if (!client || !config) return { status: "skipped", reason: "disabled" };
 
       const pass = await rows<{ external_id: string; last_synced_balance: number | null }>(
@@ -220,10 +234,9 @@ export function createPassService(
           objectId: instance.external_id,
           balance: card.balance,
           balanceLabel: designOf(card).balanceLabel,
-          // Solo el cambio de saldo dispara push en Google. El cupo de 3 por
-          // tarjeta cada 24 h lo administra el despachador de notificaciones,
-          // no este módulo.
-          notify: true,
+          // Silencioso salvo que se pida lo contrario: quién recibe un aviso y
+          // cuándo lo decide el despachador, que es el único que ve el cupo.
+          notify: options.notify ?? false,
         });
 
         await rows(
@@ -238,6 +251,28 @@ export function createPassService(
         await recordError(db, membershipId, error);
         return { status: "failed", error: messageOf(error) };
       }
+    },
+
+    /**
+     * Manda un mensaje visible al pase.
+     *
+     * Va por `addMessage` con `TEXT_AND_NOTIFY` en vez de por un cambio de campo:
+     * sirve para cualquier tipo de aviso (no solo cambios de saldo), y evita
+     * depender de `notifyPreference`, cuyo valor la documentación de Google
+     * define de forma contradictoria.
+     */
+    async sendMessage(membershipId, message) {
+      if (!client) throw new Error("Google Wallet no está configurado.");
+
+      const pass = await rows<{ external_id: string }>(
+        db.drizzle,
+        sql`SELECT external_id FROM pass_instance
+            WHERE membership_id = ${membershipId} AND platform = 'google' AND state = 'active'`,
+      );
+      const instance = pass[0];
+      if (!instance) throw new Error("La tarjeta no tiene pase de Google emitido.");
+
+      await client.addMessage(instance.external_id, { ...message, notify: true });
     },
 
     /**
