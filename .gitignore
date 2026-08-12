@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.env
+.env.local
+*.tsbuildinfo
+.DS_Store
+
+# Certificados y claves privadas de Pass Type IDs — NUNCA al repo.
+# En producción viven en el gestor de secretos, cifrados.
+*.p12
+*.pem
+*.key
+certs/

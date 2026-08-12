@@ -1,0 +1,456 @@
+/**
+ * API pública de Sophos Loyalty.
+ *
+ * Contrato backend a backend: cada producto (ElMenu, Noctu, FactuFast) tiene sus
+ * credenciales y opera solo sobre sus comercios. El aislamiento no depende de que
+ * cada handler se acuerde de filtrar — pasa por `withMerchant`, que resuelve el
+ * comercio siempre dentro del producto que hace el pedido.
+ */
+
+import { sql } from "drizzle-orm";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import { z } from "zod";
+
+import { rows, type Db } from "@sophos/db";
+import { validateConfig, type ProgramConfig } from "@sophos/rules";
+
+import {
+  authenticateProduct,
+  issueToken,
+  resolveMerchant,
+  verifyToken,
+  type ResolvedMerchant,
+  type TokenClaims,
+} from "./auth.js";
+import { applyEvent, redeem } from "./ledger.js";
+import { enroll, lookup, normalizePhone } from "./memberships.js";
+
+declare module "fastify" {
+  interface FastifyRequest {
+    claims?: TokenClaims;
+  }
+}
+
+export interface ServerOptions {
+  db: Db;
+  signingKey: Uint8Array;
+  logger?: boolean;
+}
+
+const EVENT_TYPES = [
+  "order.paid",
+  "ticket.validated",
+  "table.reserved",
+  "invoice.issued",
+] as const;
+
+export function createServer(opts: ServerOptions): FastifyInstance {
+  const { db, signingKey } = opts;
+  const app = Fastify({ logger: opts.logger ?? false });
+
+  // --------------------------------------------------------------------------
+  // Autenticación
+  // --------------------------------------------------------------------------
+
+  app.addHook("preHandler", async (request, reply) => {
+    if (!request.url.startsWith("/v1/")) return;
+
+    const header = request.headers.authorization;
+    const token = header?.startsWith("Bearer ") ? header.slice(7) : null;
+    if (!token) {
+      return reply.code(401).send({ error: "unauthorized", message: "Falta el access token." });
+    }
+
+    const claims = await verifyToken(signingKey, token);
+    if (!claims) {
+      return reply
+        .code(401)
+        .send({ error: "unauthorized", message: "Access token inválido o vencido." });
+    }
+
+    request.claims = claims;
+  });
+
+  /**
+   * Resuelve el comercio del request dentro del producto autenticado.
+   *
+   * Un comercio que no pertenece al producto que consulta devuelve 403, no 404:
+   * el 404 confirmaría que existe en otro lado.
+   */
+  async function withMerchant(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    ref: string,
+  ): Promise<ResolvedMerchant | null> {
+    const claims = request.claims;
+    if (!claims) {
+      await reply.code(401).send({ error: "unauthorized", message: "Sin credenciales." });
+      return null;
+    }
+
+    const merchant = await resolveMerchant(db, claims.productId, ref);
+    if (!merchant) {
+      await reply.code(403).send({
+        error: "forbidden",
+        message: `El comercio "${ref}" no pertenece a ${claims.productSlug}.`,
+      });
+      return null;
+    }
+
+    return merchant;
+  }
+
+  function badRequest(reply: FastifyReply, issues: unknown) {
+    return reply.code(400).send({ error: "bad_request", issues });
+  }
+
+  // --------------------------------------------------------------------------
+  // OAuth2 client_credentials
+  // --------------------------------------------------------------------------
+
+  const tokenBody = z.object({
+    grant_type: z.literal("client_credentials"),
+    client_id: z.string().min(1),
+    client_secret: z.string().min(1),
+  });
+
+  app.post("/oauth/token", async (request, reply) => {
+    const parsed = tokenBody.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const claims = await authenticateProduct(
+      db,
+      parsed.data.client_id,
+      parsed.data.client_secret,
+    );
+    if (!claims) {
+      return reply
+        .code(401)
+        .send({ error: "invalid_client", message: "Credenciales inválidas." });
+    }
+
+    const { accessToken, expiresIn } = await issueToken(signingKey, claims);
+    return reply.send({
+      access_token: accessToken,
+      token_type: "Bearer",
+      expires_in: expiresIn,
+      scope: `product:${claims.productSlug}`,
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Comercios y programas
+  // --------------------------------------------------------------------------
+
+  const merchantBody = z.object({
+    externalId: z.string().min(1),
+    slug: z.string().min(1),
+    legalName: z.string().min(1),
+    displayName: z.string().min(1),
+    timezone: z.string().optional(),
+  });
+
+  /** Alta o actualización de un comercio. Idempotente por `externalId`. */
+  app.post("/v1/merchants", async (request, reply) => {
+    const parsed = merchantBody.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const { externalId, slug, legalName, displayName, timezone } = parsed.data;
+    const productId = request.claims!.productId;
+
+    const result = await rows<{ id: string; external_id: string }>(
+      db.drizzle,
+      sql`INSERT INTO merchant
+            (product_id, external_id, slug, legal_name, display_name, timezone)
+          VALUES (${productId}, ${externalId}, ${slug}, ${legalName}, ${displayName},
+                  ${timezone ?? "America/Asuncion"})
+          ON CONFLICT (product_id, external_id) DO UPDATE
+            SET legal_name = EXCLUDED.legal_name,
+                display_name = EXCLUDED.display_name,
+                timezone = EXCLUDED.timezone
+          RETURNING id, external_id`,
+    );
+
+    return reply.code(200).send({ id: result[0]?.id, externalId: result[0]?.external_id });
+  });
+
+  const programBody = z.object({
+    merchant: z.string().min(1),
+    kind: z.enum(["points", "stamps"]),
+    config: z.record(z.string(), z.unknown()),
+  });
+
+  /** Crea o reemplaza el programa activo del comercio. */
+  app.put("/v1/programs", async (request, reply) => {
+    const parsed = programBody.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await withMerchant(request, reply, parsed.data.merchant);
+    if (!merchant) return;
+
+    const config = { ...parsed.data.config, kind: parsed.data.kind } as ProgramConfig;
+
+    // Rechazar acá es mucho más barato que descubrir la config rota cuando el
+    // comercio ya emitió mil tarjetas.
+    const errors = validateConfig(config);
+    if (errors.length) {
+      return reply.code(400).send({ error: "invalid_config", issues: errors });
+    }
+
+    const result = await db.drizzle.transaction(async (tx) => {
+      await rows(
+        tx,
+        sql`UPDATE program SET status = 'paused'
+            WHERE merchant_id = ${merchant.id} AND status = 'active'`,
+      );
+      return rows<{ id: string }>(
+        tx,
+        sql`INSERT INTO program (merchant_id, kind, config, status)
+            VALUES (${merchant.id}, ${parsed.data.kind},
+                    ${JSON.stringify(config)}::jsonb, 'active')
+            RETURNING id`,
+      );
+    });
+
+    return reply.send({ id: result[0]?.id, merchantId: merchant.id });
+  });
+
+  const rewardBody = z.object({
+    merchant: z.string().min(1),
+    name: z.string().min(1),
+    cost: z.number().int().positive(),
+    terms: z.string().optional(),
+  });
+
+  app.post("/v1/rewards", async (request, reply) => {
+    const parsed = rewardBody.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await withMerchant(request, reply, parsed.data.merchant);
+    if (!merchant) return;
+
+    const program = await activeProgram(merchant.id);
+    if (!program) {
+      return reply
+        .code(409)
+        .send({ error: "no_active_program", message: "El comercio no tiene programa activo." });
+    }
+
+    const result = await rows<{ id: string }>(
+      db.drizzle,
+      sql`INSERT INTO reward (program_id, merchant_id, name, cost, terms, status)
+          VALUES (${program.id}, ${merchant.id}, ${parsed.data.name},
+                  ${parsed.data.cost}, ${parsed.data.terms ?? null}, 'active')
+          RETURNING id`,
+    );
+
+    return reply.code(201).send({ id: result[0]?.id });
+  });
+
+  // --------------------------------------------------------------------------
+  // Tarjetas
+  // --------------------------------------------------------------------------
+
+  const enrollBody = z.object({
+    merchant: z.string().min(1),
+    phone: z.string().min(6),
+    displayName: z.string().optional(),
+    consentVersion: z.string().default("v1"),
+    phoneVerified: z.boolean().default(false),
+  });
+
+  app.post("/v1/memberships", async (request, reply) => {
+    const parsed = enrollBody.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await withMerchant(request, reply, parsed.data.merchant);
+    if (!merchant) return;
+
+    if (!normalizePhone(parsed.data.phone)) {
+      return reply
+        .code(400)
+        .send({ error: "invalid_phone", message: "Número de celular inválido." });
+    }
+
+    const program = await activeProgram(merchant.id);
+    if (!program) {
+      return reply
+        .code(409)
+        .send({ error: "no_active_program", message: "El comercio no tiene programa activo." });
+    }
+
+    const result = await enroll(db, {
+      merchantId: merchant.id,
+      programId: program.id,
+      phone: parsed.data.phone,
+      ...(parsed.data.displayName ? { displayName: parsed.data.displayName } : {}),
+      consentVersion: parsed.data.consentVersion,
+      phoneVerified: parsed.data.phoneVerified,
+    });
+
+    return reply.code(result.created ? 201 : 200).send(result);
+  });
+
+  const lookupQuery = z.object({
+    merchant: z.string().min(1),
+    phone: z.string().optional(),
+    serial: z.string().optional(),
+  });
+
+  app.get("/v1/memberships/lookup", async (request, reply) => {
+    const parsed = lookupQuery.safeParse(request.query);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+    if (!parsed.data.phone && !parsed.data.serial) {
+      return badRequest(reply, "Se requiere phone o serial.");
+    }
+
+    const merchant = await withMerchant(request, reply, parsed.data.merchant);
+    if (!merchant) return;
+
+    const membership = await lookup(db, merchant.id, {
+      ...(parsed.data.phone ? { phone: parsed.data.phone } : {}),
+      ...(parsed.data.serial ? { serial: parsed.data.serial } : {}),
+    });
+
+    if (!membership) {
+      return reply.code(404).send({ error: "not_found", message: "Sin tarjeta en este comercio." });
+    }
+
+    return reply.send(membership);
+  });
+
+  // --------------------------------------------------------------------------
+  // Eventos de negocio
+  // --------------------------------------------------------------------------
+
+  const eventBody = z.object({
+    merchant: z.string().min(1),
+    idempotencyKey: z.string().min(1),
+    type: z.enum(EVENT_TYPES),
+    occurredAt: z.string().optional(),
+    amount: z.number().int().nonnegative().optional(),
+    membership: z.object({
+      id: z.string().optional(),
+      serial: z.string().optional(),
+      phone: z.string().optional(),
+    }),
+    payload: z.record(z.string(), z.unknown()).optional(),
+  });
+
+  app.post("/v1/events", async (request, reply) => {
+    const parsed = eventBody.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await withMerchant(request, reply, parsed.data.merchant);
+    if (!merchant) return;
+
+    const membershipId = await resolveMembershipId(
+      merchant.id,
+      parsed.data.membership,
+    );
+    if (!membershipId) {
+      return reply
+        .code(404)
+        .send({ error: "membership_not_found", message: "Sin tarjeta en este comercio." });
+    }
+
+    const occurredAt = parsed.data.occurredAt ? new Date(parsed.data.occurredAt) : new Date();
+    if (Number.isNaN(occurredAt.getTime())) {
+      return badRequest(reply, "occurredAt no es una fecha válida.");
+    }
+
+    const result = await applyEvent(db, {
+      productId: request.claims!.productId,
+      merchantId: merchant.id,
+      membershipId,
+      idempotencyKey: parsed.data.idempotencyKey,
+      type: parsed.data.type,
+      occurredAt,
+      ...(parsed.data.amount !== undefined ? { amount: parsed.data.amount } : {}),
+      ...(parsed.data.payload ? { payload: parsed.data.payload } : {}),
+    });
+
+    // Un reintento devuelve 200 con el resultado original; el primer envío, 201.
+    return reply.code(result.duplicate ? 200 : 201).send(result);
+  });
+
+  // --------------------------------------------------------------------------
+  // Canjes
+  // --------------------------------------------------------------------------
+
+  const redeemBody = z.object({
+    merchant: z.string().min(1),
+    rewardId: z.string().min(1),
+    membership: z.object({
+      id: z.string().optional(),
+      serial: z.string().optional(),
+      phone: z.string().optional(),
+    }),
+    redeemedBy: z.string().min(1),
+  });
+
+  app.post("/v1/redemptions", async (request, reply) => {
+    const parsed = redeemBody.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await withMerchant(request, reply, parsed.data.merchant);
+    if (!merchant) return;
+
+    const membershipId = await resolveMembershipId(merchant.id, parsed.data.membership);
+    if (!membershipId) {
+      return reply
+        .code(404)
+        .send({ error: "membership_not_found", message: "Sin tarjeta en este comercio." });
+    }
+
+    const result = await redeem(db, {
+      merchantId: merchant.id,
+      membershipId,
+      rewardId: parsed.data.rewardId,
+      redeemedBy: parsed.data.redeemedBy,
+    });
+
+    if (!result.ok) {
+      const status = result.reason === "insufficient_balance" ? 409 : 404;
+      return reply.code(status).send({ error: result.reason, ...result });
+    }
+
+    return reply.code(201).send(result);
+  });
+
+  app.get("/health", async () => ({ status: "ok" }));
+
+  // --------------------------------------------------------------------------
+  // Helpers con acceso a la conexión
+  // --------------------------------------------------------------------------
+
+  async function activeProgram(merchantId: string): Promise<{ id: string } | null> {
+    const found = await rows<{ id: string }>(
+      db.drizzle,
+      sql`SELECT id FROM program WHERE merchant_id = ${merchantId} AND status = 'active'`,
+    );
+    return found[0] ?? null;
+  }
+
+  /** Traduce una referencia de tarjeta a su id, siempre dentro del comercio. */
+  async function resolveMembershipId(
+    merchantId: string,
+    ref: { id?: string; serial?: string; phone?: string },
+  ): Promise<string | null> {
+    if (ref.id) {
+      const found = await rows<{ id: string }>(
+        db.drizzle,
+        sql`SELECT id FROM membership WHERE id = ${ref.id} AND merchant_id = ${merchantId}`,
+      );
+      return found[0]?.id ?? null;
+    }
+
+    const membership = await lookup(db, merchantId, {
+      ...(ref.serial ? { serial: ref.serial } : {}),
+      ...(ref.phone ? { phone: ref.phone } : {}),
+    });
+    return membership?.id ?? null;
+  }
+
+  return app;
+}

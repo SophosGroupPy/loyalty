@@ -1,0 +1,31 @@
+{
+  "name": "sophos-loyalty",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @sophos/api dev",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --build --force"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.4",
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.21.0",
+    "pg": "^8.23.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "fastify": "^5.11.3",
+    "jose": "^6.2.8",
+    "zod": "^4.4.3"
+  }
+}
