@@ -56,6 +56,8 @@ describe("migraciones", () => {
       "ledger_entry",
       "membership",
       "merchant",
+      "merchant_location",
+      "pass_instance",
       "person",
       "product",
       "program",

@@ -8,6 +8,7 @@
 
 import { createDb, runMigrations } from "@sophos/db";
 
+import { googleWalletConfigFromEnv } from "./passes.js";
 import { createServer } from "./server.js";
 
 function requireSigningKey(): Uint8Array {
@@ -32,7 +33,20 @@ function requireSigningKey(): Uint8Array {
 const db = await createDb();
 await runMigrations(db);
 
-const app = createServer({ db, signingKey: requireSigningKey(), logger: true });
+const googleWallet = googleWalletConfigFromEnv();
+if (!googleWallet) {
+  console.warn(
+    "[loyalty] Google Wallet sin configurar: /v1/passes responde 503. " +
+      "Falta GOOGLE_WALLET_ISSUER_ID, GOOGLE_WALLET_SA_EMAIL o GOOGLE_WALLET_SA_PRIVATE_KEY.",
+  );
+}
+
+const app = createServer({
+  db,
+  signingKey: requireSigningKey(),
+  logger: true,
+  ...(googleWallet ? { googleWallet } : {}),
+});
 
 const port = Number(process.env.PORT ?? 3001);
 await app.listen({ port, host: "0.0.0.0" });

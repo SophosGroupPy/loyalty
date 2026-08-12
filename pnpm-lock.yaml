@@ -48,6 +48,9 @@ importers:
       '@sophos/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@sophos/passes':
+        specifier: workspace:*
+        version: link:../../packages/passes
       '@sophos/rules':
         specifier: workspace:*
         version: link:../../packages/rules
@@ -66,12 +69,21 @@ importers:
 
   packages/db:
     dependencies:
+      '@sophos/passes':
+        specifier: workspace:*
+        version: link:../passes
       '@sophos/rules':
         specifier: workspace:*
         version: link:../rules
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(@electric-sql/pglite@0.5.4)(@types/pg@8.21.0)(pg@8.23.0)
+
+  packages/passes:
+    dependencies:
+      jose:
+        specifier: ^6.0.0
+        version: 6.2.8
 
   packages/rules: {}
 

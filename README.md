@@ -12,23 +12,27 @@ Plan completo de arquitectura: `~/.claude/plans/estamos-desarrollando-un-program
 
 ## Estado
 
-**Fase 1 completa** — motor de reglas, ledger, API de ingesta y aviso al POS.
-Todavía sin wallets: la fase 1 se valida con tarjeta web + QR y no depende ni de
-Apple ni de Google.
-
 | Fase | Alcance | Estado |
 |---|---|---|
 | 1 | Motor, ledger, API, aislamiento multi-tenant, aviso al POS | ✅ |
-| 2 | Google Wallet, alta con OTP, consola embebible, notificaciones | pendiente |
+| 2 | Google Wallet: emisión, sincronización, geocercas, diseño | ✅ |
+| 2 | Alta con OTP, consola embebible, despachador de notificaciones | pendiente |
 | 3 | Integración con ElMenu y Noctu | pendiente |
 | 4 | Apple Wallet (bloqueada por el enrollment) | pendiente |
+
+**Google Wallet está construido y testeado, pero todavía no emitió una tarjeta
+real**: falta crear el Issuer. Sin credenciales, `/v1/passes` responde 503 y todo
+lo demás sigue funcionando igual. Antes de salir a producción hay que recorrer
+[docs/google-wallet-verificacion.md](docs/google-wallet-verificacion.md), que
+lista los valores que la documentación de Google define de forma contradictoria.
 
 ## Estructura
 
 ```
 packages/rules   motor de reglas declarativo, puro y sin dependencias
 packages/db      esquema, migraciones y conexión (PGlite en dev, Postgres en prod)
-apps/api         API pública: OAuth2, ingesta de eventos, tarjetas, canjes
+packages/passes  Google Wallet: builders, firma de save links, cliente REST
+apps/api         API pública: OAuth2, ingesta, tarjetas, canjes, pases
 ```
 
 ## Comandos
@@ -52,6 +56,10 @@ migraciones.
 | `DATABASE_URL` | en producción | Postgres. Sin ella, PGlite en memoria. |
 | `JWT_SIGNING_KEY` | en producción | Firma de los access token. Si cambia, todos los productos integrados pierden sus tokens. |
 | `PORT` | no | Por defecto 3001. |
+| `GOOGLE_WALLET_ISSUER_ID` | para emitir | Issuer que Google asigna a Sophos. |
+| `GOOGLE_WALLET_SA_EMAIL` | para emitir | Service account de GCP. |
+| `GOOGLE_WALLET_SA_PRIVATE_KEY` | para emitir | Clave privada PEM. Acepta los `\n` escapados del JSON de GCP. |
+| `GOOGLE_WALLET_ORIGINS` | no | Dominios autorizados a mostrar el botón de guardado. |
 
 ## Las invariantes que no se negocian
 
@@ -78,6 +86,12 @@ Están cubiertas por tests; si alguna se rompe, la suite falla.
 5. **El QR identifica pero no autoriza.** Toda acumulación y todo canje se
    validan server-side contra un evento de venta real, así que no importa que
    alguien comparta una captura de su tarjeta.
+
+6. **Una caída de Google no puede romper una acumulación.** El cliente ya
+   consumió y sus puntos le corresponden. La sincronización del pase corre fuera
+   de la transacción del asiento, no propaga excepciones, y deja el desfasaje
+   registrado en `pass_instance` para que la reconciliación lo levante después
+   (`GET /v1/passes/pending-sync`).
 
 ## Decisiones que conviene conocer antes de tocar el código
 
@@ -114,6 +128,10 @@ POST /v1/memberships              alta de tarjeta (idempotente)
 GET  /v1/memberships/lookup       identificar cliente en el POS (?phone= | ?serial=)
 POST /v1/events                   ingesta de eventos de negocio (idempotente)
 POST /v1/redemptions              canje de un beneficio
+PUT  /v1/design                   diseño de la tarjeta (logo, colores, etiquetas)
+POST /v1/locations                geocercas del comercio (máximo 10)
+POST /v1/passes                   emite la tarjeta y devuelve el save link
+GET  /v1/passes/pending-sync      pases desfasados: la cola de reconciliación
 GET  /health
 ```
 

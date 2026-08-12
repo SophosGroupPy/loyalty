@@ -10,6 +10,7 @@
 
 import {
   date,
+  doublePrecision,
   integer,
   jsonb,
   pgTable,
@@ -18,6 +19,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
+import type { CardDesign } from "@sophos/passes";
 import type { EarnTrace, ProgramConfig } from "@sophos/rules";
 
 export const product = pgTable("product", {
@@ -37,6 +39,30 @@ export const merchant = pgTable("merchant", {
   legalName: text("legal_name").notNull(),
   displayName: text("display_name").notNull(),
   timezone: text("timezone").notNull(),
+  design: jsonb("design").$type<CardDesign>(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const merchantLocation = pgTable("merchant_location", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  merchantId: uuid("merchant_id").notNull(),
+  label: text("label").notNull(),
+  latitude: doublePrecision("latitude").notNull(),
+  longitude: doublePrecision("longitude").notNull(),
+  relevantText: text("relevant_text"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const passInstance = pgTable("pass_instance", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  membershipId: uuid("membership_id").notNull(),
+  merchantId: uuid("merchant_id").notNull(),
+  platform: text("platform").$type<"google" | "apple" | "web">().notNull(),
+  externalId: text("external_id").notNull(),
+  state: text("state").$type<"active" | "revoked">().notNull(),
+  lastSyncedBalance: integer("last_synced_balance"),
+  lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+  lastError: text("last_error"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -140,6 +166,8 @@ export const redemption = pgTable("redemption", {
 export const schema = {
   product,
   merchant,
+  merchantLocation,
+  passInstance,
   program,
   person,
   membership,

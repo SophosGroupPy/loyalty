@@ -24,6 +24,8 @@ import {
 } from "./auth.js";
 import { applyEvent, redeem } from "./ledger.js";
 import { enroll, lookup, normalizePhone } from "./memberships.js";
+import { createPassService, type PassService } from "./passes.js";
+import type { GoogleWalletConfig } from "@sophos/passes";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -35,6 +37,12 @@ export interface ServerOptions {
   db: Db;
   signingKey: Uint8Array;
   logger?: boolean;
+  /** Sin esto, los endpoints de wallet responden 503 y el resto sigue andando. */
+  googleWallet?: GoogleWalletConfig;
+  /** Inyectable para testear la capa de pases sin red. */
+  fetchImpl?: typeof fetch;
+  /** Permite sustituir el servicio completo en los tests. */
+  passService?: PassService;
 }
 
 const EVENT_TYPES = [
@@ -47,6 +55,22 @@ const EVENT_TYPES = [
 export function createServer(opts: ServerOptions): FastifyInstance {
   const { db, signingKey } = opts;
   const app = Fastify({ logger: opts.logger ?? false });
+
+  const passes =
+    opts.passService ?? createPassService(db, opts.googleWallet, opts.fetchImpl);
+
+  /**
+   * Empuja el saldo al pase sin bloquear la respuesta ni poder romperla.
+   *
+   * El cliente ya consumió y sus puntos le corresponden: que Google esté caído
+   * no puede convertir una acumulación exitosa en un error. El desfasaje queda
+   * registrado y lo levanta la reconciliación.
+   */
+  function syncPassInBackground(membershipId: string): void {
+    void passes.syncGooglePass(membershipId).catch((error) => {
+      app.log.error({ err: error, membershipId }, "falló la sincronización del pase");
+    });
+  }
 
   // --------------------------------------------------------------------------
   // Autenticación
@@ -370,6 +394,11 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       ...(parsed.data.payload ? { payload: parsed.data.payload } : {}),
     });
 
+    // Solo se sincroniza si el saldo efectivamente cambió: un reintento o un
+    // evento topeado no tienen nada que empujar, y cada PATCH innecesario gasta
+    // cupo de notificaciones del cliente.
+    if (!result.duplicate && result.amount > 0) syncPassInBackground(membershipId);
+
     // Un reintento devuelve 200 con el resultado original; el primer envío, 201.
     return reply.code(result.duplicate ? 200 : 201).send(result);
   });
@@ -415,7 +444,123 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       return reply.code(status).send({ error: result.reason, ...result });
     }
 
+    syncPassInBackground(membershipId);
     return reply.code(201).send(result);
+  });
+
+  // --------------------------------------------------------------------------
+  // Diseño de la tarjeta, ubicaciones y emisión del pase
+  // --------------------------------------------------------------------------
+
+  const designBody = z.object({
+    merchant: z.string().min(1),
+    programName: z.string().min(1),
+    logoUrl: z.string().url(),
+    heroImageUrl: z.string().url().optional(),
+    backgroundColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    balanceLabel: z.string().min(1),
+    // Se acepta renombrarlo, no eliminarlo: en Apple es el único vehículo de
+    // notificación, y agregarlo después obliga a reemitir todos los pases.
+    newsLabel: z.string().min(1).default("Novedades"),
+  });
+
+  app.put("/v1/design", async (request, reply) => {
+    const parsed = designBody.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await withMerchant(request, reply, parsed.data.merchant);
+    if (!merchant) return;
+
+    const { merchant: _ref, ...design } = parsed.data;
+    await rows(
+      db.drizzle,
+      sql`UPDATE merchant SET design = ${JSON.stringify(design)}::jsonb
+          WHERE id = ${merchant.id}`,
+    );
+
+    return reply.send({ merchantId: merchant.id, design });
+  });
+
+  const locationBody = z.object({
+    merchant: z.string().min(1),
+    label: z.string().min(1),
+    latitude: z.number().min(-90).max(90),
+    longitude: z.number().min(-180).max(180),
+    relevantText: z.string().optional(),
+  });
+
+  app.post("/v1/locations", async (request, reply) => {
+    const parsed = locationBody.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await withMerchant(request, reply, parsed.data.merchant);
+    if (!merchant) return;
+
+    // Apple admite 10 ubicaciones por pase. Aceptar más sería aceptar en falso:
+    // las que sobran no dispararían nada y nadie se enteraría.
+    const existing = await rows<{ count: string }>(
+      db.drizzle,
+      sql`SELECT count(*)::text AS count FROM merchant_location WHERE merchant_id = ${merchant.id}`,
+    );
+    if (Number(existing[0]?.count ?? 0) >= 10) {
+      return reply.code(409).send({
+        error: "too_many_locations",
+        message:
+          "Máximo 10 ubicaciones por comercio: es el tope que impone Apple por pase.",
+      });
+    }
+
+    const created = await rows<{ id: string }>(
+      db.drizzle,
+      sql`INSERT INTO merchant_location (merchant_id, label, latitude, longitude, relevant_text)
+          VALUES (${merchant.id}, ${parsed.data.label}, ${parsed.data.latitude},
+                  ${parsed.data.longitude}, ${parsed.data.relevantText ?? null})
+          RETURNING id`,
+    );
+
+    return reply.code(201).send({ id: created[0]?.id });
+  });
+
+  const passBody = z.object({
+    merchant: z.string().min(1),
+    membership: z.object({
+      id: z.string().optional(),
+      serial: z.string().optional(),
+      phone: z.string().optional(),
+    }),
+    platform: z.enum(["google"]).default("google"),
+  });
+
+  /** Emite la tarjeta y devuelve el link de "Add to Google Wallet". */
+  app.post("/v1/passes", async (request, reply) => {
+    const parsed = passBody.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    if (!passes.enabled) {
+      return reply.code(503).send({
+        error: "wallet_not_configured",
+        message:
+          "Google Wallet no está configurado. Falta el Issuer ID y la service account.",
+      });
+    }
+
+    const merchant = await withMerchant(request, reply, parsed.data.merchant);
+    if (!merchant) return;
+
+    const membershipId = await resolveMembershipId(merchant.id, parsed.data.membership);
+    if (!membershipId) {
+      return reply
+        .code(404)
+        .send({ error: "membership_not_found", message: "Sin tarjeta en este comercio." });
+    }
+
+    const saveUrl = await passes.issueGooglePass(membershipId, merchant.id);
+    return reply.code(201).send({ platform: "google", saveUrl, membershipId });
+  });
+
+  /** Pases cuyo saldo quedó atrás del real. Es la cola de reconciliación. */
+  app.get("/v1/passes/pending-sync", async (_request, reply) => {
+    return reply.send({ passes: await passes.pendingSync() });
   });
 
   app.get("/health", async () => ({ status: "ok" }));
