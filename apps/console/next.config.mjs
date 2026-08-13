@@ -17,6 +17,10 @@ const ancestors =
 export default {
   eslint: { ignoreDuringBuilds: true },
   async headers() {
+    // ⚠️ El orden importa: cuando dos reglas matchean la misma ruta, Next aplica
+    // la ÚLTIMA. Por eso la genérica va primero y la de /admin después — al
+    // revés, /admin heredaba el `frame-ancestors` permisivo de la consola
+    // embebible y quedaba embebible sin que nada lo delatara.
     return [
       {
         source: "/:path*",
@@ -26,6 +30,18 @@ export default {
           // quede cacheada en un proxy compartido.
           { key: "Cache-Control", value: "no-store" },
           { key: "Referrer-Policy", value: "no-referrer" },
+        ],
+      },
+      {
+        // El back-office ve TODO el ecosistema y puede dar de alta productos.
+        // No se embebe en ningún lado, nunca: en un iframe sería un blanco de
+        // clickjacking con mucho más poder que la consola de un comercio.
+        source: "/admin/:path*",
+        headers: [
+          { key: "Content-Security-Policy", value: "frame-ancestors 'none';" },
+          { key: "Cache-Control", value: "no-store" },
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "X-Robots-Tag", value: "noindex, nofollow" },
         ],
       },
     ];
