@@ -1484,6 +1484,104 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     return reply.send({ kind: program.kind, config: program.config });
   });
 
+  /**
+   * Base de clientes del comercio, con su historial de consumo.
+   *
+   * **Todo se deriva de los eventos que el propio producto ya envía.** No hay
+   * ninguna sincronización con el CRM de ElMenu o Noctu, y es a propósito: el
+   * cliente consintió el programa de ESTE comercio, no que Sophos ingiera la
+   * base entera. Importar el CRM traería gente que nunca se sumó, sin base
+   * legal para tratar sus datos.
+   *
+   * La contrapartida honesta: acá solo aparecen los clientes con tarjeta. Los
+   * que compran sin sumarse son invisibles para loyalty, y así debe ser.
+   */
+  app.get("/embed/customers", async (request, reply) => {
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const parsed = z
+      .object({
+        q: z.string().max(80).optional(),
+        sort: z.enum(["recent", "spend", "balance", "visits"]).default("recent"),
+      })
+      .safeParse(request.query);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const orden =
+      parsed.data.sort === "spend"
+        ? sql`total_spent DESC NULLS LAST`
+        : parsed.data.sort === "balance"
+          ? sql`m.balance DESC`
+          : parsed.data.sort === "visits"
+            ? sql`visits DESC`
+            : sql`last_visit DESC NULLS LAST`;
+
+    const filtro = parsed.data.q
+      ? sql`AND (m.display_name ILIKE ${"%" + parsed.data.q + "%"}
+                 OR p.phone_e164 ILIKE ${"%" + parsed.data.q + "%"})`
+      : sql``;
+
+    const customers = await rows(
+      db.drizzle,
+      sql`SELECT m.id, m.serial_number, m.display_name, m.balance, m.tier,
+                 m.issued_at, p.phone_e164 AS phone,
+                 stats.visits, stats.total_spent, stats.last_visit,
+                 -- El ticket promedio se calcula solo sobre consumos con monto:
+                 -- una entrada validada o una reserva no son una compra, y
+                 -- meterlas en el promedio lo hundiría sin que se note.
+                 CASE WHEN stats.paid_visits > 0
+                      THEN (stats.total_spent / stats.paid_visits)
+                      ELSE NULL END AS avg_ticket,
+                 (SELECT count(*)::int FROM redemption rd
+                   WHERE rd.membership_id = m.id) AS redemptions
+          FROM membership m
+          JOIN person p ON p.id = m.person_id
+          LEFT JOIN LATERAL (
+            SELECT count(*)::int AS visits,
+                   count(*) FILTER (WHERE e.amount IS NOT NULL)::int AS paid_visits,
+                   COALESCE(sum(e.amount), 0)::int AS total_spent,
+                   max(e.occurred_at) AS last_visit
+            FROM event e
+            WHERE e.membership_id = m.id
+          ) stats ON true
+          WHERE m.merchant_id = ${merchant.id} ${filtro}
+          ORDER BY ${orden}
+          LIMIT 200`,
+    );
+
+    return reply.send({ customers });
+  });
+
+  /** Historial de un cliente: sus consumos y canjes, en orden. */
+  app.get<{ Params: { id: string } }>(
+    "/embed/customers/:id/history",
+    async (request, reply) => {
+      const merchant = await embedMerchant(request);
+      if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+      // El merchant del token entra en el WHERE: sin esto, conocer el id de una
+      // tarjeta ajena bastaría para leer el historial de un cliente de otro
+      // comercio.
+      const entries = await rows(
+        db.drizzle,
+        sql`SELECT l.created_at, l.kind, l.amount, l.balance_after,
+                   e.amount AS spent, e.type AS event_type,
+                   rw.name AS reward_name
+            FROM ledger_entry l
+            LEFT JOIN event e ON e.id = l.source_event_id
+            LEFT JOIN redemption rd ON rd.ledger_entry_id = l.id
+            LEFT JOIN reward rw ON rw.id = rd.reward_id
+            WHERE l.membership_id = ${request.params.id}
+              AND l.merchant_id = ${merchant.id}
+            ORDER BY l.created_at DESC
+            LIMIT 100`,
+      );
+
+      return reply.send({ entries });
+    },
+  );
+
   const HEX = /^#[0-9a-fA-F]{6}$/;
 
   /**

@@ -124,11 +124,16 @@ export async function applyEvent(
     //    idéntica llegó primero, `DO NOTHING` no devuelve fila.
     const inserted = await rows<{ id: string }>(
       tx,
+      // El monto va en su propia columna, no solo dentro del payload: es lo que
+      // permite derivar visitas, gasto y ticket promedio desde los datos que
+      // loyalty ya recibe, sin necesidad de importar el CRM del producto.
       sql`INSERT INTO event
-            (product_id, merchant_id, membership_id, idempotency_key, type, payload, occurred_at)
+            (product_id, merchant_id, membership_id, idempotency_key, type, payload,
+             amount, occurred_at)
           VALUES (${input.productId}, ${input.merchantId}, ${input.membershipId},
                   ${input.idempotencyKey}, ${input.type},
                   ${JSON.stringify(input.payload ?? {})}::jsonb,
+                  ${input.amount ?? null},
                   ${input.occurredAt.toISOString()})
           ON CONFLICT (product_id, idempotency_key) DO NOTHING
           RETURNING id`,

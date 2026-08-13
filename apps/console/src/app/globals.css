@@ -345,6 +345,55 @@ button.secondary {
 }
 
 /* ---------------------------------------------------------------------------
+   Clientes
+   --------------------------------------------------------------------------- */
+
+.clientes-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+
+nav.orden {
+  display: flex;
+  gap: 0.15rem;
+  flex-wrap: wrap;
+}
+
+nav.orden a {
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  text-decoration: none;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+nav.orden a.on {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.buscador {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.buscador input[name="q"] {
+  flex: 1;
+  font: inherit;
+  font-size: 0.9375rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* ---------------------------------------------------------------------------
    Diseño de la tarjeta
    --------------------------------------------------------------------------- */
 

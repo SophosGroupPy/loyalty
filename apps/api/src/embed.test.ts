@@ -498,6 +498,94 @@ describe("diseño de la tarjeta", () => {
   });
 });
 
+describe("base de clientes", () => {
+  let donJulio: string;
+  let laVecina: string;
+
+  beforeEach(async () => {
+    const elmenu = asProduct(elmenuToken);
+    await elmenu("PUT", "/v1/programs", {
+      merchant: "r-2",
+      kind: "points",
+      config: { earn: [{ on: "order.paid", points: 1 }] },
+    });
+
+    // Ana: muchas visitas de ticket bajo. Bruno: pocas de ticket alto.
+    for (const [phone, nombre, visitas, ticket] of [
+      ["0993111111", "Ana Vera", 4, 50_000],
+      ["0993222222", "Bruno Diaz", 2, 300_000],
+    ] as const) {
+      const card = await elmenu("POST", "/v1/memberships", {
+        merchant: "r-1",
+        phone,
+        displayName: nombre,
+        phoneVerified: true,
+      });
+      for (let v = 1; v <= visitas; v++) {
+        await elmenu("POST", "/v1/events", {
+          merchant: "r-1",
+          idempotencyKey: `${phone}-${v}`,
+          type: "order.paid",
+          amount: ticket,
+          membership: { id: card.json().membershipId },
+        });
+      }
+    }
+
+    donJulio = (await elmenu("POST", "/v1/embed-tokens", { merchant: "r-1" })).json().token;
+    laVecina = (await elmenu("POST", "/v1/embed-tokens", { merchant: "r-2" })).json().token;
+  });
+
+  it("deriva visitas, gasto y ticket promedio de los eventos ya recibidos", async () => {
+    const res = await asEmbed(donJulio)("GET", "/embed/customers?sort=spend");
+    const [bruno, ana] = res.json().customers;
+
+    // Sin importar ningún CRM: sale de los `order.paid` que el producto manda.
+    expect(bruno.display_name).toBe("Bruno Diaz");
+    expect(bruno.visits).toBe(2);
+    expect(bruno.total_spent).toBe(600_000);
+    expect(bruno.avg_ticket).toBe(300_000);
+
+    expect(ana.visits).toBe(4);
+    expect(ana.avg_ticket).toBe(50_000);
+  });
+
+  it("ordena por gasto y por visitas de forma distinta", async () => {
+    // El que más gastó no es el que más vino: es justamente la distinción que
+    // el comercio necesita para decidir a quién cuidar.
+    const porGasto = await asEmbed(donJulio)("GET", "/embed/customers?sort=spend");
+    expect(porGasto.json().customers[0].display_name).toBe("Bruno Diaz");
+
+    const porVisitas = await asEmbed(donJulio)("GET", "/embed/customers?sort=visits");
+    expect(porVisitas.json().customers[0].display_name).toBe("Ana Vera");
+  });
+
+  it("busca por nombre y por celular", async () => {
+    const porNombre = await asEmbed(donJulio)("GET", "/embed/customers?q=Ana");
+    expect(porNombre.json().customers).toHaveLength(1);
+
+    const porTelefono = await asEmbed(donJulio)("GET", "/embed/customers?q=222222");
+    expect(porTelefono.json().customers[0].display_name).toBe("Bruno Diaz");
+  });
+
+  it("un comercio no ve la base de otro", async () => {
+    expect((await asEmbed(laVecina)("GET", "/embed/customers")).json().customers).toEqual([]);
+  });
+
+  it("no deja leer el historial de una tarjeta de otro comercio", async () => {
+    const mios = await asEmbed(donJulio)("GET", "/embed/customers");
+    const id = mios.json().customers[0].id;
+
+    // Conocer el id de una tarjeta ajena no puede alcanzar para leer su
+    // historial de consumo.
+    const ajeno = await asEmbed(laVecina)("GET", `/embed/customers/${id}/history`);
+    expect(ajeno.json().entries).toEqual([]);
+
+    const propio = await asEmbed(donJulio)("GET", `/embed/customers/${id}/history`);
+    expect(propio.json().entries.length).toBeGreaterThan(0);
+  });
+});
+
 describe("vencimiento", () => {
   it("rechaza un token vencido", async () => {
     const { token } = await issueEmbedToken(

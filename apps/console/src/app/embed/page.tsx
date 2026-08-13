@@ -6,6 +6,7 @@ import {
   fetchNotifications,
   fetchProgram,
   fetchReach,
+  fetchCustomers,
   fetchDesign,
   fetchRewards,
   fetchSummary,
@@ -20,6 +21,7 @@ const TABS = [
   { id: "resumen", label: "Resumen" },
   { id: "programa", label: "Programa" },
   { id: "beneficios", label: "Beneficios" },
+  { id: "clientes", label: "Clientes" },
   { id: "diseno", label: "Diseño" },
   { id: "notificaciones", label: "Notificaciones" },
   { id: "difusion", label: "Difusión" },
@@ -92,11 +94,13 @@ function describeRule(rule: NonNullable<ProgramView["config"]["earn"]>[number], 
 export default async function EmbedPage({
   searchParams,
 }: {
-  searchParams: Promise<{ token?: string; tab?: string }>;
+  searchParams: Promise<{ token?: string; tab?: string; sort?: string; q?: string }>;
 }) {
   const params = await searchParams;
   const token = params.token;
   const tab = (TABS.find((t) => t.id === params.tab)?.id ?? "resumen") as TabId;
+  const sort = params.sort ?? "recent";
+  const q = params.q ?? "";
 
   if (!token) {
     return (
@@ -146,6 +150,7 @@ export default async function EmbedPage({
       {tab === "resumen" ? <Resumen summary={summary} /> : null}
       {tab === "programa" ? <Programa token={token} unit={unit} /> : null}
       {tab === "beneficios" ? <Beneficios token={token} unit={unit} /> : null}
+      {tab === "clientes" ? <Clientes token={token} sort={sort} q={q} /> : null}
       {tab === "diseno" ? <Diseno token={token} /> : null}
       {tab === "notificaciones" ? <Notificaciones token={token} /> : null}
       {tab === "difusion" ? <Difusion token={token} /> : null}
@@ -276,6 +281,111 @@ async function Beneficios({ token, unit }: { token: string; unit: string }) {
 
       <h2 style={{ marginTop: "1.75rem" }}>Agregar</h2>
       <NuevoBeneficio token={token} unit={unit} />
+    </section>
+  );
+}
+
+const ORDENES = [
+  { id: "recent", label: "Última visita" },
+  { id: "spend", label: "Más gastaron" },
+  { id: "visits", label: "Más visitas" },
+  { id: "balance", label: "Más saldo" },
+] as const;
+
+const fechaCorta = new Intl.DateTimeFormat("es-PY", { day: "numeric", month: "short" });
+
+/** "hace 3 días" dice más que una fecha cuando lo que importa es la distancia. */
+function haceCuanto(iso: string | null): string {
+  if (!iso) return "—";
+  const dias = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
+  if (dias <= 0) return "hoy";
+  if (dias === 1) return "ayer";
+  if (dias < 30) return `hace ${dias} días`;
+  return fechaCorta.format(new Date(iso));
+}
+
+async function Clientes({ token, sort, q }: { token: string; sort: string; q: string }) {
+  const data = await fetchCustomers(token, sort, q);
+  if (!data) return null;
+
+  const link = (extra: Record<string, string>) =>
+    `?${new URLSearchParams({ token, tab: "clientes", sort, ...(q ? { q } : {}), ...extra })}`;
+
+  return (
+    <section>
+      <div className="clientes-top">
+        <h2 style={{ margin: 0 }}>Tu base de clientes</h2>
+        <nav className="orden">
+          {ORDENES.map((o) => (
+            <a key={o.id} className={o.id === sort ? "on" : ""} href={link({ sort: o.id })}>
+              {o.label}
+            </a>
+          ))}
+        </nav>
+      </div>
+
+      <form className="buscador" method="get">
+        <input type="hidden" name="token" value={token} />
+        <input type="hidden" name="tab" value="clientes" />
+        <input type="hidden" name="sort" value={sort} />
+        <input name="q" defaultValue={q} placeholder="Buscar por nombre o celular" />
+        <button type="submit" className="secondary" style={{ marginTop: 0 }}>
+          Buscar
+        </button>
+      </form>
+
+      {data.customers.length === 0 ? (
+        <div className="panel">
+          <p style={{ margin: 0 }}>
+            {q ? "Ningún cliente coincide con esa búsqueda." : "Todavía no tenés clientes."}
+          </p>
+        </div>
+      ) : (
+        <div className="panel">
+          <table>
+            <thead>
+              <tr>
+                <th>Cliente</th>
+                <th className="num">Saldo</th>
+                <th className="num">Visitas</th>
+                <th className="num">Gastó</th>
+                <th className="num">Ticket prom.</th>
+                <th className="num">Última</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.customers.map((c) => (
+                <tr key={c.id}>
+                  <td>
+                    <strong>{c.display_name ?? "Sin nombre"}</strong>
+                    <div className="cond">
+                      {c.phone}
+                      {c.tier ? ` · ${c.tier}` : ""}
+                      {c.redemptions > 0 ? ` · ${c.redemptions} canjes` : ""}
+                    </div>
+                  </td>
+                  <td className="num">{guaranies.format(c.balance)}</td>
+                  <td className="num">{c.visits}</td>
+                  <td className="num">
+                    {c.total_spent > 0 ? `₲ ${guaranies.format(c.total_spent)}` : "—"}
+                  </td>
+                  <td className="num">
+                    {c.avg_ticket ? `₲ ${guaranies.format(c.avg_ticket)}` : "—"}
+                  </td>
+                  <td className="num">{haceCuanto(c.last_visit)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Decirlo explícitamente evita que el comercio crea que le falta gente:
+          loyalty no ve —ni debe ver— a quien compró sin sumarse al programa. */}
+      <p className="hint">
+        Acá aparecen solo los clientes con tarjeta. Quien compra sin sumarse no
+        figura: loyalty no toca la base de clientes de tu sistema.
+      </p>
     </section>
   );
 }

@@ -152,6 +152,14 @@ export const event = pgTable("event", {
   idempotencyKey: text("idempotency_key").notNull(),
   type: text("type").notNull(),
   payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+  /**
+   * Monto de la transacción, en la unidad mínima de la moneda.
+   *
+   * Se persiste aunque el motor ya lo haya consumido: es lo que permite derivar
+   * visitas, gasto y ticket promedio sin importar el CRM del producto. Es
+   * `NULL` en eventos que no son una compra, como validar una entrada.
+   */
+  amount: integer("amount"),
   occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
   receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
   processedAt: timestamp("processed_at", { withTimezone: true }),

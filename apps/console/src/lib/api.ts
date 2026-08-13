@@ -85,6 +85,27 @@ export interface CampaignRow {
   suppressed: number;
 }
 
+export interface CustomerRow {
+  id: string;
+  serial_number: string;
+  display_name: string | null;
+  phone: string;
+  balance: number;
+  tier: string | null;
+  issued_at: string;
+  visits: number;
+  total_spent: number;
+  avg_ticket: number | null;
+  last_visit: string | null;
+  redemptions: number;
+}
+
+export const fetchCustomers = (token: string, sort = "recent", q = "") =>
+  get<{ customers: CustomerRow[] }>(
+    `/embed/customers?sort=${sort}${q ? `&q=${encodeURIComponent(q)}` : ""}`,
+    token,
+  );
+
 export interface CardDesignView {
   programName: string;
   logoUrl: string;
