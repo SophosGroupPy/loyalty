@@ -105,6 +105,17 @@ export const membership = pgTable("membership", {
   issuedAt: timestamp("issued_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const otpChallenge = pgTable("otp_challenge", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  phoneE164: text("phone_e164").notNull(),
+  merchantId: uuid("merchant_id").notNull(),
+  codeHash: text("code_hash").notNull(),
+  attempts: integer("attempts").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const campaign = pgTable("campaign", {
   id: uuid("id").primaryKey().defaultRandom(),
   merchantId: uuid("merchant_id").notNull(),
@@ -207,4 +218,5 @@ export const schema = {
   redemption,
   campaign,
   notification,
+  otpChallenge,
 };

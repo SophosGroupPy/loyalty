@@ -33,6 +33,15 @@ function requireSigningKey(): Uint8Array {
 const db = await createDb();
 await runMigrations(db);
 
+// Sin `DATABASE_URL` la base es PGlite en memoria y arranca vacía, así que la
+// landing de alta no tendría ningún comercio que mostrar. La condición está acá
+// y no dentro de `seedDev` para que sea imposible sembrar un Postgres real.
+if (!process.env.DATABASE_URL) {
+  const { seedDev, DEV_MERCHANT_SLUG } = await import("./dev-seed.js");
+  await seedDev(db);
+  console.log(`[loyalty] base en memoria sembrada — comercio /${DEV_MERCHANT_SLUG}`);
+}
+
 const googleWallet = googleWalletConfigFromEnv();
 if (!googleWallet) {
   console.warn(

@@ -24,12 +24,18 @@ import {
 } from "./auth.js";
 import { applyEvent, redeem } from "./ledger.js";
 import { enroll, lookup, normalizePhone } from "./memberships.js";
+import {
+  createConsoleOtpSender,
+  startEnrollment,
+  verifyEnrollment,
+  type OtpSender,
+} from "./enrollment.js";
 import { campaignReport, dispatchDue, enqueue } from "./notifications/dispatcher.js";
 import { CAMPAIGN_BUDGET } from "./notifications/policy.js";
 import { createConsoleSender, createWalletSender } from "./notifications/senders.js";
 import type { NotificationSender } from "./notifications/dispatcher.js";
 import { createPassService, type PassService } from "./passes.js";
-import type { GoogleWalletConfig } from "@sophos/passes";
+import type { CardDesign, GoogleWalletConfig } from "@sophos/passes";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -49,6 +55,8 @@ export interface ServerOptions {
   passService?: PassService;
   /** Canal de envío. Por defecto: wallet si hay credenciales, consola si no. */
   notificationSender?: NotificationSender;
+  /** Envío del OTP. Por defecto imprime por consola, para desarrollo. */
+  otpSender?: OtpSender;
 }
 
 const EVENT_TYPES = [
@@ -71,6 +79,10 @@ export function createServer(opts: ServerOptions): FastifyInstance {
   const sender =
     opts.notificationSender ??
     (passes.enabled ? createWalletSender(passes) : createConsoleSender());
+
+  // Sin proveedor de WhatsApp o SMS el código se imprime por consola: permite
+  // recorrer el alta entera antes de contratar uno.
+  const otpSender = opts.otpSender ?? createConsoleOtpSender();
 
   /**
    * Empuja el saldo al pase sin bloquear la respuesta ni poder romperla.
@@ -730,6 +742,185 @@ export function createServer(opts: ServerOptions): FastifyInstance {
    */
   app.post("/v1/notifications/dispatch", async (_request, reply) => {
     return reply.send(await dispatchDue(db, sender));
+  });
+
+  // --------------------------------------------------------------------------
+  // Alta pública del cliente
+  //
+  // A diferencia del resto, estas rutas no llevan token: la landing de alta es
+  // pública por naturaleza — cualquiera con el QR de la mesa puede darse de
+  // alta. La protección es el rate limit y el propio OTP, no una credencial.
+  // --------------------------------------------------------------------------
+
+  /**
+   * Freno por IP, en memoria.
+   *
+   * El tope por número ya acota cuánto se le puede molestar a una víctima
+   * puntual; esto acota que un mismo origen dispare códigos a muchos números
+   * distintos, que es como se hace bombing de SMS y como se le infla la factura
+   * al proveedor.
+   *
+   * En memoria alcanza para una sola instancia. Con varias hay que moverlo a un
+   * almacén compartido, o cada réplica permitirá el tope completo por su cuenta.
+   */
+  const sendsByIp = new Map<string, number[]>();
+  const MAX_SENDS_PER_IP_PER_HOUR = 20;
+
+  function ipAllowed(ip: string, now = Date.now()): boolean {
+    const cutoff = now - 60 * 60 * 1000;
+    const recent = (sendsByIp.get(ip) ?? []).filter((t) => t > cutoff);
+
+    if (recent.length >= MAX_SENDS_PER_IP_PER_HOUR) {
+      sendsByIp.set(ip, recent);
+      return false;
+    }
+
+    recent.push(now);
+    sendsByIp.set(ip, recent);
+    return true;
+  }
+
+  /** Resuelve un comercio por su slug público, sin exponer nada interno. */
+  async function publicMerchant(slug: string) {
+    const found = await rows<{
+      id: string;
+      display_name: string;
+      design: CardDesign | null;
+      program_id: string | null;
+      program_kind: "points" | "stamps" | null;
+    }>(
+      db.drizzle,
+      sql`SELECT m.id, m.display_name, m.design,
+                 p.id AS program_id, p.kind AS program_kind
+          FROM merchant m
+          LEFT JOIN program p ON p.merchant_id = m.id AND p.status = 'active'
+          WHERE m.slug = ${slug}`,
+    );
+    return found[0] ?? null;
+  }
+
+  /** Datos de marca para pintar la landing. */
+  app.get<{ Params: { slug: string } }>("/public/merchants/:slug", async (request, reply) => {
+    const merchant = await publicMerchant(request.params.slug);
+    if (!merchant || !merchant.program_id) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+
+    return reply.send({
+      slug: request.params.slug,
+      displayName: merchant.display_name,
+      programName: merchant.design?.programName ?? merchant.display_name,
+      logoUrl: merchant.design?.logoUrl ?? null,
+      backgroundColor: merchant.design?.backgroundColor ?? "#1F2937",
+      unit: merchant.program_kind === "stamps" ? "stamps" : "points",
+    });
+  });
+
+  const startBody = z.object({
+    merchant: z.string().min(1),
+    phone: z.string().min(6),
+  });
+
+  app.post("/public/enrollment/start", async (request, reply) => {
+    const parsed = startBody.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    if (!ipAllowed(request.ip)) {
+      return reply.code(429).send({
+        error: "rate_limited",
+        message: "Demasiados pedidos desde este origen. Probá más tarde.",
+      });
+    }
+
+    const merchant = await publicMerchant(parsed.data.merchant);
+    if (!merchant || !merchant.program_id) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+
+    const result = await startEnrollment(db, otpSender, {
+      merchantId: merchant.id,
+      merchantName: merchant.display_name,
+      phone: parsed.data.phone,
+    });
+
+    if (result.status === "invalid_phone") {
+      return reply
+        .code(400)
+        .send({ error: "invalid_phone", message: "Número de celular inválido." });
+    }
+    if (result.status === "rate_limited") {
+      return reply.code(429).send({
+        error: "rate_limited",
+        retryAfterMinutes: result.retryAfterMinutes,
+      });
+    }
+
+    return reply.send({ status: "sent", expiresAt: result.expiresAt });
+  });
+
+  const verifyBody = z.object({
+    merchant: z.string().min(1),
+    phone: z.string().min(6),
+    code: z.string().min(4).max(8),
+    displayName: z.string().min(1).max(80).optional(),
+    /** Consentimiento del programa del comercio. Sin esto no hay alta. */
+    acceptsProgram: z.literal(true),
+    /**
+     * Consentimiento separado para que Sophos conserve la identidad verificada.
+     * Es opcional a propósito: son dos bases legales distintas y el cliente
+     * puede aceptar una y no la otra.
+     */
+    acceptsSharedIdentity: z.boolean().default(false),
+  });
+
+  app.post("/public/enrollment/verify", async (request, reply) => {
+    const parsed = verifyBody.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await publicMerchant(parsed.data.merchant);
+    if (!merchant || !merchant.program_id) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+
+    const result = await verifyEnrollment(db, {
+      merchantId: merchant.id,
+      programId: merchant.program_id,
+      phone: parsed.data.phone,
+      code: parsed.data.code,
+      ...(parsed.data.displayName ? { displayName: parsed.data.displayName } : {}),
+      // Se registra qué consintió exactamente, no un "sí" genérico: son dos
+      // bases legales distintas bajo la Ley 7593/2025.
+      consentVersion: parsed.data.acceptsSharedIdentity
+        ? "programa+identidad/v1"
+        : "programa/v1",
+    });
+
+    if (result.status !== "verified") {
+      const status = result.status === "invalid_code" ? 401 : 410;
+      return reply.code(status).send({ error: result.status, ...result });
+    }
+
+    // La tarjeta ya existe; el pase es lo que falta. Si Google no está
+    // configurado el alta igual valió: el cliente tiene su tarjeta web.
+    let saveUrl: string | null = null;
+    if (passes.enabled) {
+      try {
+        saveUrl = (await passes.issueGooglePass(result.membership.membershipId, merchant.id))
+          .saveUrl;
+      } catch (error) {
+        app.log.error({ err: error }, "no se pudo emitir el pase tras el alta");
+      }
+    }
+
+    return reply.code(201).send({
+      status: "verified",
+      membershipId: result.membership.membershipId,
+      serialNumber: result.membership.serialNumber,
+      balance: result.membership.balance,
+      /** `true` si la persona ya existía: el alta de un toque del ecosistema. */
+      personExisted: result.membership.personExisted,
+      saveUrl,
+    });
   });
 
   app.get("/health", async () => ({ status: "ok" }));

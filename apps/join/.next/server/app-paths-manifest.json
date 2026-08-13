@@ -1,0 +1,5 @@
+{
+  "/api/enrollment/start/route": "app/api/enrollment/start/route.js",
+  "/api/enrollment/verify/route": "app/api/enrollment/verify/route.js",
+  "/[merchant]/page": "app/[merchant]/page.js"
+}

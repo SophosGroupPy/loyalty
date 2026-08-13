@@ -56,9 +56,9 @@ async function main(): Promise<void> {
   const token = await createTokenProvider(config)();
   const url = `https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/${encodeURIComponent(classId)}`;
 
-  const before = await (
+  const before = (await (
     await fetch(url, { headers: { authorization: `Bearer ${token}` } })
-  ).json();
+  ).json()) as { issuerName?: string; reviewStatus?: string };
 
   // Hay que reenviar `reviewStatus: UNDER_REVIEW` sí o sí. Google rechaza
   // cualquier edición que llegue con `APPROVED`, porque ese valor lo asigna él y
