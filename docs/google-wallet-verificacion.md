@@ -18,7 +18,17 @@ Issuer. Todos los valores en duda viven en un solo archivo:
 | **Issuer ID (Google Wallet)** | ✅ **`3388000000023171859`** |
 | Service account de GCP | ✅ `loyalty-issuer@loyalty-sophos.iam.gserviceaccount.com` |
 | Invitada en Wallet Console | ✅ rol **Developer** |
-| Publishing access | ⬜ **pendiente, y es el que tarda** |
+| Publishing access | ⏳ **solicitado el 2026-08-12** |
+
+**Sobre el publishing access:** Google responde por mail en 2-3 días hábiles. Si
+no llega nada para el **2026-08-17**, escalar por *Contact support* en la
+consola. Es irreversible: una vez aprobado no se puede volver a demo mode.
+
+> ⚠️ **Antes de que llegue la aprobación, archivar o borrar la clase
+> `don-julio`.** La consola avisa que *"any classes you have set to Active will
+> immediately be published when access is granted"*, y esa es una clase de
+> prueba de un restaurante ficticio, con el logo de Sophos como placeholder.
+> Si queda activa, se publica como si fuera un comercio real.
 
 ## Lo ya verificado contra la API real (2026-08-12)
 
