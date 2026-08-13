@@ -7,7 +7,7 @@
  * flujo — se agrega acá y el cliente ni se entera.
  */
 
-const API_URL = process.env.LOYALTY_API_URL ?? "http://127.0.0.1:3001";
+const API_URL = process.env.LOYALTY_API_URL ?? "http://127.0.0.1:4001";
 
 export interface MerchantBranding {
   slug: string;

@@ -1,15 +1,21 @@
 import QRCode from "qrcode";
 
 import {
+  fetchCampaigns,
   fetchEnrollmentLink,
+  fetchNotifications,
   fetchProgram,
+  fetchReach,
   fetchSummary,
   type ProgramView,
 } from "../../lib/api";
+import { guardarAvisos } from "./actions";
+import { Composer, Historial } from "./campanas";
 
 const TABS = [
   { id: "resumen", label: "Resumen" },
   { id: "programa", label: "Programa" },
+  { id: "notificaciones", label: "Notificaciones" },
   { id: "difusion", label: "Difusión" },
 ] as const;
 
@@ -133,6 +139,7 @@ export default async function EmbedPage({
 
       {tab === "resumen" ? <Resumen summary={summary} /> : null}
       {tab === "programa" ? <Programa token={token} unit={unit} /> : null}
+      {tab === "notificaciones" ? <Notificaciones token={token} /> : null}
       {tab === "difusion" ? <Difusion token={token} /> : null}
     </main>
   );
@@ -232,6 +239,59 @@ async function Programa({ token, unit }: { token: string; unit: string }) {
           </div>
         </>
       ) : null}
+    </section>
+  );
+}
+
+async function Notificaciones({ token }: { token: string }) {
+  const [settings, reach, historial] = await Promise.all([
+    fetchNotifications(token),
+    fetchReach(token),
+    fetchCampaigns(token),
+  ]);
+
+  if (!settings) {
+    return (
+      <section>
+        <div className="panel">
+          <p style={{ margin: 0 }}>Configurá tu programa antes de mandar avisos.</p>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section>
+      <h2>Avisos automáticos</h2>
+      <form action={guardarAvisos} className="panel">
+        <input type="hidden" name="token" value={token} />
+        {settings.kinds.map((k) => (
+          <div className="rule toggle-row" key={k.id}>
+            <div>
+              <div>{k.label}</div>
+              <div className="cond">{k.description}</div>
+            </div>
+            <label className="switch">
+              <input type="hidden" name="kind" value={k.id} />
+              <input
+                type="checkbox"
+                name="enabled"
+                value={k.id}
+                defaultChecked={k.enabled}
+              />
+            </label>
+          </div>
+        ))}
+        <button type="submit" className="secondary">
+          Guardar
+        </button>
+      </form>
+
+      <h2 style={{ marginTop: "1.75rem" }}>Nueva campaña</h2>
+      <Composer token={token} reach={reach} />
+
+      <h2 style={{ marginTop: "1.75rem" }}>Enviadas</h2>
+      <Historial campaigns={historial?.campaigns ?? []} />
     </section>
   );
 }

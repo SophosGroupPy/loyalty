@@ -187,6 +187,135 @@ code.url {
 }
 
 /* ---------------------------------------------------------------------------
+   Notificaciones y campañas
+   --------------------------------------------------------------------------- */
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.composer label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
+.composer input[type="text"],
+.composer input:not([type]),
+.composer textarea {
+  font: inherit;
+  font-size: 0.9375rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  resize: vertical;
+}
+
+.composer button,
+button.secondary {
+  font: inherit;
+  cursor: pointer;
+  align-self: flex-start;
+  padding: 0.5rem 0.9rem;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 500;
+  font-size: 0.875rem;
+}
+
+button.secondary {
+  margin-top: 0.9rem;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.composer button[disabled] {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* El medidor de alcance real, para que el comercio no asuma que llega a todos. */
+.reach {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.85rem;
+  background: var(--bg);
+}
+
+.reach p {
+  margin: 0.5rem 0 0;
+  font-size: 0.875rem;
+}
+
+.reach-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.reach-fill {
+  height: 100%;
+  background: #16a34a;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.switch input[type="checkbox"] {
+  width: 2.4rem;
+  height: 1.4rem;
+  accent-color: #16a34a;
+  cursor: pointer;
+}
+
+.entrega {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+.pill,
+.ok-pill,
+.warn-pill {
+  font-size: 0.75rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.ok-pill {
+  color: #16a34a;
+  border-color: #16a34a44;
+}
+
+.warn-pill {
+  color: #d97706;
+  border-color: #d9770644;
+}
+
+.ok {
+  color: #16a34a;
+  font-size: 0.8125rem;
+  margin: 0;
+}
+
+/* ---------------------------------------------------------------------------
    Back-office
    --------------------------------------------------------------------------- */
 

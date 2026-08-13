@@ -2,11 +2,25 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "api",
+      "runtimeExecutable": "/usr/local/bin/node",
+      "runtimeArgs": ["../../node_modules/.bin/tsx", "watch", "src/index.ts"],
+      "cwd": "apps/api",
+      "port": 4001
+    },
+    {
       "name": "join",
       "runtimeExecutable": "/usr/local/bin/node",
-      "runtimeArgs": ["../../node_modules/next/dist/bin/next", "dev", "-p", "3002"],
+      "runtimeArgs": ["../../node_modules/next/dist/bin/next", "dev", "-p", "4002"],
       "cwd": "apps/join",
-      "port": 3002
+      "port": 4002
+    },
+    {
+      "name": "console",
+      "runtimeExecutable": "/usr/local/bin/node",
+      "runtimeArgs": ["../../node_modules/next/dist/bin/next", "dev", "-p", "4003"],
+      "cwd": "apps/console",
+      "port": 4003
     }
   ]
 }

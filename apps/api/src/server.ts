@@ -42,7 +42,36 @@ import {
   type OtpSender,
 } from "./enrollment.js";
 import { campaignReport, dispatchDue, enqueue } from "./notifications/dispatcher.js";
-import { CAMPAIGN_BUDGET } from "./notifications/policy.js";
+import { CAMPAIGN_BUDGET, DAILY_BUDGET } from "./notifications/policy.js";
+
+/**
+ * Avisos que el sistema dispara solo, con el texto que ve el comercio.
+ *
+ * Deliberadamente no se le habla de "kinds" ni de prioridades internas: se le
+ * dice cuándo se manda cada uno y para qué sirve.
+ */
+const AUTOMATIC_KINDS = [
+  {
+    id: "balance_changed",
+    label: "Sumó puntos",
+    description: "Después de cada consumo, con el saldo actualizado.",
+  },
+  {
+    id: "reward_unlocked",
+    label: "Desbloqueó un beneficio",
+    description: "Cuando cruza el umbral. Es el que más visitas genera.",
+  },
+  {
+    id: "points_expiring",
+    label: "Se le vencen puntos",
+    description: "Antes del vencimiento. Es el que más clientes dormidos recupera.",
+  },
+  {
+    id: "tier_changed",
+    label: "Cambió de nivel",
+    description: "Cuando sube o baja de categoría.",
+  },
+] as const;
 import { createConsoleSender, createWalletSender } from "./notifications/senders.js";
 import type { NotificationSender } from "./notifications/dispatcher.js";
 import { createPassService, type PassService } from "./passes.js";
@@ -1453,6 +1482,161 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     if (!program) return reply.code(404).send({ error: "no_program" });
 
     return reply.send({ kind: program.kind, config: program.config });
+  });
+
+  /**
+   * Avisos automáticos del comercio, con su estado.
+   *
+   * `campaign` no aparece: no es automático, lo escribe el comercio.
+   */
+  app.get("/embed/notifications", async (request, reply) => {
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const found = await rows<{ config: ProgramConfig }>(
+      db.drizzle,
+      sql`SELECT config FROM program
+          WHERE merchant_id = ${merchant.id} AND status = 'active'`,
+    );
+    const settings = found[0]?.config?.notifications ?? {};
+    const disabled = new Set(settings.disabledKinds ?? []);
+
+    return reply.send({
+      kinds: AUTOMATIC_KINDS.map((k) => ({ ...k, enabled: !disabled.has(k.id) })),
+      quietHours: settings.quietHours ?? null,
+      // El comercio no ve "3 pushes por pase cada 24 h": ve la consecuencia.
+      dailyBudget: DAILY_BUDGET,
+      campaignBudget: CAMPAIGN_BUDGET,
+    });
+  });
+
+  app.put("/embed/notifications", async (request, reply) => {
+    const parsed = z
+      .object({
+        disabledKinds: z.array(z.string()).default([]),
+        quietHours: z
+          .object({ from: z.number().int().min(0).max(23), to: z.number().int().min(0).max(23) })
+          .nullable()
+          .optional(),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const found = await rows<{ id: string; config: ProgramConfig }>(
+      db.drizzle,
+      sql`SELECT id, config FROM program
+          WHERE merchant_id = ${merchant.id} AND status = 'active'`,
+    );
+    const program = found[0];
+    if (!program) return reply.code(404).send({ error: "no_program" });
+
+    const config: ProgramConfig = {
+      ...program.config,
+      notifications: {
+        ...(program.config.notifications ?? {}),
+        disabledKinds: parsed.data.disabledKinds,
+        ...(parsed.data.quietHours !== undefined
+          ? { quietHours: parsed.data.quietHours ?? undefined }
+          : {}),
+      },
+    };
+
+    await rows(
+      db.drizzle,
+      sql`UPDATE program SET config = ${JSON.stringify(config)}::jsonb, updated_at = now()
+          WHERE id = ${program.id}`,
+    );
+
+    return reply.send({ ok: true });
+  });
+
+  /** Alcance real de la próxima campaña. */
+  app.get("/embed/campaigns/reach", async (request, reply) => {
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    return reply.send(await reachFor(merchant.id));
+  });
+
+  /** Campañas enviadas, con lo que realmente llegó. */
+  app.get("/embed/campaigns", async (request, reply) => {
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const campaigns = await rows<{
+      id: string;
+      header: string;
+      body: string;
+      created_at: string;
+      targeted: number;
+      delivered: number;
+      pending: number;
+      suppressed: number;
+    }>(
+      db.drizzle,
+      sql`SELECT c.id, c.header, c.body, c.created_at,
+                 count(n.id)::int AS targeted,
+                 count(n.id) FILTER (WHERE n.sent_at IS NOT NULL)::int AS delivered,
+                 count(n.id) FILTER (
+                   WHERE n.sent_at IS NULL AND n.suppressed_reason IS NULL)::int AS pending,
+                 count(n.id) FILTER (WHERE n.suppressed_reason IS NOT NULL)::int AS suppressed
+          FROM campaign c
+          LEFT JOIN notification n ON n.campaign_id = c.id
+          WHERE c.merchant_id = ${merchant.id}
+          GROUP BY c.id, c.header, c.body, c.created_at
+          ORDER BY c.created_at DESC
+          LIMIT 30`,
+    );
+
+    return reply.send({ campaigns });
+  });
+
+  app.post("/embed/campaigns", async (request, reply) => {
+    const parsed = z
+      .object({
+        header: z.string().min(1).max(60),
+        body: z.string().min(1).max(300),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const created = await rows<{ id: string }>(
+      db.drizzle,
+      sql`INSERT INTO campaign (merchant_id, header, body, created_by)
+          VALUES (${merchant.id}, ${parsed.data.header}, ${parsed.data.body},
+                  ${request.embed?.staffId ?? "consola"})
+          RETURNING id`,
+    );
+    const campaignId = created[0]?.id;
+    if (!campaignId) throw new Error("no se pudo crear la campaña");
+
+    const audience = await rows<{ id: string }>(
+      db.drizzle,
+      sql`SELECT id FROM membership WHERE merchant_id = ${merchant.id} AND status = 'active'`,
+    );
+
+    // Se encola una por cliente y el despachador decide cuáles entran. Encolar
+    // todo y reportar después es lo que distingue "no le mandamos" de "no le
+    // entró", que para el comercio son cosas muy distintas.
+    for (const member of audience) {
+      await enqueue(db, {
+        membershipId: member.id,
+        merchantId: merchant.id,
+        kind: "campaign",
+        campaignId,
+        header: parsed.data.header,
+        body: parsed.data.body,
+        now: clock(),
+      });
+    }
+
+    return reply.code(201).send({ id: campaignId, targeted: audience.length });
   });
 
   /** Datos para imprimir el QR de alta. */

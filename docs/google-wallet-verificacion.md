@@ -252,7 +252,7 @@ pnpm dev
 ```
 
 ```bash
-curl -s -X POST localhost:3001/oauth/token -H 'content-type: application/json' \
+curl -s -X POST localhost:4001/oauth/token -H 'content-type: application/json' \
   -d '{"grant_type":"client_credentials","client_id":"...","client_secret":"..."}'
 ```
 

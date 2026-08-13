@@ -42,7 +42,7 @@ apps/api         API pública: OAuth2, ingesta, tarjetas, canjes, pases
 pnpm install
 pnpm test          # 50 tests
 pnpm typecheck
-pnpm dev           # levanta la API en :3001
+pnpm dev           # levanta la API en :4001
 ```
 
 Sin `DATABASE_URL` la API levanta **PGlite en memoria** — Postgres real compilado
@@ -56,7 +56,7 @@ migraciones.
 |---|---|---|
 | `DATABASE_URL` | en producción | Postgres. Sin ella, PGlite en memoria. |
 | `JWT_SIGNING_KEY` | en producción | Firma de los access token. Si cambia, todos los productos integrados pierden sus tokens. |
-| `PORT` | no | Por defecto 3001. |
+| `PORT` | no | Por defecto 4001. |
 | `GOOGLE_WALLET_ISSUER_ID` | para emitir | Issuer de Sophos: `3388000000023171859`. |
 | `GOOGLE_WALLET_SA_EMAIL` | para emitir | Service account de GCP. |
 | `GOOGLE_WALLET_SA_PRIVATE_KEY` | para emitir | Clave privada PEM. Acepta los `\n` escapados del JSON de GCP. |

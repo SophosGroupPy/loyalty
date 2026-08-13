@@ -241,6 +241,85 @@ describe("aislamiento de la sesión de consola", () => {
   });
 });
 
+describe("campañas desde la consola", () => {
+  let donJulio: string;
+  let laVecina: string;
+
+  beforeEach(async () => {
+    const elmenu = asProduct(elmenuToken);
+    await elmenu("PUT", "/v1/programs", {
+      merchant: "r-2",
+      kind: "points",
+      config: { earn: [{ on: "order.paid", points: 1 }] },
+    });
+
+    for (const [merchant, phone] of [
+      ["r-1", "0993111111"],
+      ["r-2", "0993222222"],
+    ] as const) {
+      await elmenu("POST", "/v1/memberships", { merchant, phone, phoneVerified: true });
+    }
+
+    donJulio = (await elmenu("POST", "/v1/embed-tokens", { merchant: "r-1" })).json().token;
+    laVecina = (await elmenu("POST", "/v1/embed-tokens", { merchant: "r-2" })).json().token;
+  });
+
+  it("crea la campaña y la encola para su propia base", async () => {
+    const res = await asEmbed(donJulio)("POST", "/embed/campaigns", {
+      header: "2x1 en pizzas",
+      body: "Hoy hasta las 23",
+    });
+
+    expect(res.statusCode, res.body).toBe(201);
+    expect(res.json().targeted).toBe(1);
+  });
+
+  it("un comercio no ve las campañas de otro", async () => {
+    await asEmbed(donJulio)("POST", "/embed/campaigns", {
+      header: "Solo de Don Julio",
+      body: "x",
+    });
+
+    const ajeno = await asEmbed(laVecina)("GET", "/embed/campaigns");
+    expect(ajeno.json().campaigns).toEqual([]);
+
+    const propio = await asEmbed(donJulio)("GET", "/embed/campaigns");
+    expect(propio.json().campaigns).toHaveLength(1);
+    expect(propio.json().campaigns[0].header).toBe("Solo de Don Julio");
+  });
+
+  it("el alcance cuenta solo los clientes propios", async () => {
+    const res = await asEmbed(donJulio)("GET", "/embed/campaigns/reach");
+
+    expect(res.json().total).toBe(1);
+    expect(res.json().reachable).toBe(1);
+  });
+
+  it("apagar un aviso automático no afecta a otro comercio", async () => {
+    await asEmbed(donJulio)("PUT", "/embed/notifications", {
+      disabledKinds: ["tier_changed"],
+    });
+
+    const propio = await asEmbed(donJulio)("GET", "/embed/notifications");
+    const tier = propio.json().kinds.find((k: { id: string }) => k.id === "tier_changed");
+    expect(tier.enabled).toBe(false);
+
+    // El vecino queda como estaba: la configuración vive en SU programa.
+    const vecino = await asEmbed(laVecina)("GET", "/embed/notifications");
+    const suTier = vecino.json().kinds.find((k: { id: string }) => k.id === "tier_changed");
+    expect(suTier.enabled).toBe(true);
+  });
+
+  it("no expone los límites de plataforma como tales, pero sí el cupo", async () => {
+    const res = await asEmbed(donJulio)("GET", "/embed/notifications");
+
+    // La consola necesita el número para traducirlo a "a cuántos les llega";
+    // lo que no hace es mostrárselo al comercio como "3 pushes por pase".
+    expect(res.json().dailyBudget).toBe(3);
+    expect(res.json().campaignBudget).toBe(2);
+  });
+});
+
 describe("vencimiento", () => {
   it("rechaza un token vencido", async () => {
     const { token } = await issueEmbedToken(

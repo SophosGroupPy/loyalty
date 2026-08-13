@@ -72,7 +72,7 @@ const app = createServer({
   ...(googleWallet ? { googleWallet } : {}),
 });
 
-const port = Number(process.env.PORT ?? 3001);
+const port = Number(process.env.PORT ?? 4001);
 await app.listen({ port, host: "0.0.0.0" });
 
 console.log(`[loyalty] API escuchando en :${port}`);

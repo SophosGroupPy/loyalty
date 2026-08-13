@@ -10,7 +10,7 @@
 
 import { cookies } from "next/headers";
 
-const API_URL = process.env.LOYALTY_API_URL ?? "http://127.0.0.1:3001";
+const API_URL = process.env.LOYALTY_API_URL ?? "http://127.0.0.1:4001";
 const COOKIE = "sophos_admin";
 
 export interface ProductRow {

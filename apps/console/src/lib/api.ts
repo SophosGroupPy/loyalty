@@ -6,7 +6,7 @@
  * y deja un solo lugar donde revisar cómo se usa la credencial.
  */
 
-const API_URL = process.env.LOYALTY_API_URL ?? "http://127.0.0.1:3001";
+const API_URL = process.env.LOYALTY_API_URL ?? "http://127.0.0.1:4001";
 
 export interface Summary {
   merchant: { displayName: string; slug: string };
@@ -54,7 +54,64 @@ async function get<T>(path: string, token: string): Promise<T | null> {
   return response.json() as Promise<T>;
 }
 
+export interface AutomaticKind {
+  id: string;
+  label: string;
+  description: string;
+  enabled: boolean;
+}
+
+export interface NotificationSettings {
+  kinds: AutomaticKind[];
+  quietHours: { from: number; to: number } | null;
+  dailyBudget: number;
+  campaignBudget: number;
+}
+
+export interface Reach {
+  total: number;
+  reachable: number;
+  unreachable: number;
+}
+
+export interface CampaignRow {
+  id: string;
+  header: string;
+  body: string;
+  created_at: string;
+  targeted: number;
+  delivered: number;
+  pending: number;
+  suppressed: number;
+}
+
 export const fetchSummary = (token: string) => get<Summary>("/embed/summary", token);
+export const fetchNotifications = (token: string) =>
+  get<NotificationSettings>("/embed/notifications", token);
+export const fetchReach = (token: string) => get<Reach>("/embed/campaigns/reach", token);
+export const fetchCampaigns = (token: string) =>
+  get<{ campaigns: CampaignRow[] }>("/embed/campaigns", token);
+
+/** Escribe en la API con el token de la sesión de consola. */
+export async function post<T>(path: string, token: string, body: unknown): Promise<T | null> {
+  const response = await fetch(`${API_URL}${path}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  return response.ok ? ((await response.json()) as T) : null;
+}
+
+export async function put<T>(path: string, token: string, body: unknown): Promise<T | null> {
+  const response = await fetch(`${API_URL}${path}`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  return response.ok ? ((await response.json()) as T) : null;
+}
 export const fetchProgram = (token: string) => get<ProgramView>("/embed/program", token);
 export const fetchEnrollmentLink = (token: string) =>
   get<EnrollmentLink>("/embed/enrollment-link", token);
