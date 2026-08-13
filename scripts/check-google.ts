@@ -75,17 +75,42 @@ async function main(): Promise<void> {
     { headers: { authorization: `Bearer ${token}` } },
   );
 
-  if (response.status === 403) {
-    bad("403: la service account no tiene acceso a este issuer");
-    console.log("\n  Falta invitarla en Wallet Console → Users → Invite a user:");
-    console.log(`    ${config.serviceAccountEmail}`);
-    console.log("  con rol Developer. Es el paso que más se olvida y el error");
-    console.log("  de Google no lo menciona.\n");
-    process.exit(1);
-  }
-
   if (!response.ok) {
-    bad(`La API respondió ${response.status}: ${await response.text()}`);
+    const raw = await response.text();
+    bad(`La API respondió ${response.status}`);
+
+    // Se imprime el mensaje de Google textual antes de cualquier interpretación:
+    // un 403 puede ser "API deshabilitada en el proyecto" o "sin acceso al
+    // issuer", y son arreglos completamente distintos. Adivinar cuál es manda a
+    // buscar el problema al lugar equivocado.
+    console.log("\n  \x1b[2mRespuesta de Google:\x1b[0m");
+    try {
+      const parsed = JSON.parse(raw) as {
+        error?: { message?: string; status?: string; details?: unknown[] };
+      };
+      console.log(`    ${parsed.error?.status ?? ""} ${parsed.error?.message ?? raw}`);
+      for (const detail of parsed.error?.details ?? []) {
+        console.log(`    ${JSON.stringify(detail)}`);
+      }
+    } catch {
+      console.log(`    ${raw.slice(0, 800)}`);
+    }
+
+    if (response.status === 403) {
+      console.log("\n  \x1b[1mLas dos causas posibles de un 403:\x1b[0m");
+      console.log("\n  a) La Wallet API no está habilitada en el proyecto de GCP.");
+      console.log("     El mensaje de arriba lo dice explícitamente si es el caso.");
+      console.log("     Se arregla acá:");
+      console.log(
+        "     https://console.cloud.google.com/apis/library/walletobjects.googleapis.com?project=" +
+          (process.env.GOOGLE_WALLET_SA_EMAIL?.split("@")[1]?.split(".")[0] ?? ""),
+      );
+      console.log("\n  b) La service account no está invitada en Wallet Console.");
+      console.log("     Wallet Console → Users → Invite a user, rol Developer:");
+      console.log(`       ${config.serviceAccountEmail}`);
+    }
+
+    console.log("");
     process.exit(1);
   }
 
