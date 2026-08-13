@@ -85,6 +85,20 @@ export interface CampaignRow {
   suppressed: number;
 }
 
+export interface RewardRow {
+  id: string;
+  name: string;
+  cost: number;
+  terms: string | null;
+  status: "active" | "archived";
+  redemptions: number;
+  /** Cuántos clientes activos ya tienen saldo para canjearlo. */
+  can_afford: number;
+}
+
+export const fetchRewards = (token: string) =>
+  get<{ rewards: RewardRow[]; members: number }>("/embed/rewards", token);
+
 export const fetchSummary = (token: string) => get<Summary>("/embed/summary", token);
 export const fetchNotifications = (token: string) =>
   get<NotificationSettings>("/embed/notifications", token);

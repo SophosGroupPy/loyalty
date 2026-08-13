@@ -320,6 +320,101 @@ describe("campañas desde la consola", () => {
   });
 });
 
+describe("beneficios desde la consola", () => {
+  let donJulio: string;
+  let laVecina: string;
+
+  beforeEach(async () => {
+    const elmenu = asProduct(elmenuToken);
+    await elmenu("PUT", "/v1/programs", {
+      merchant: "r-2",
+      kind: "points",
+      config: { earn: [{ on: "order.paid", points: 1 }] },
+    });
+
+    donJulio = (await elmenu("POST", "/v1/embed-tokens", { merchant: "r-1" })).json().token;
+    laVecina = (await elmenu("POST", "/v1/embed-tokens", { merchant: "r-2" })).json().token;
+  });
+
+  it("crea un beneficio y lo lista", async () => {
+    const creado = await asEmbed(donJulio)("POST", "/embed/rewards", {
+      name: "Café gratis",
+      cost: 10,
+      terms: "No acumulable",
+    });
+    expect(creado.statusCode, creado.body).toBe(201);
+
+    const lista = await asEmbed(donJulio)("GET", "/embed/rewards");
+    expect(lista.json().rewards).toHaveLength(1);
+    expect(lista.json().rewards[0].name).toBe("Café gratis");
+  });
+
+  it("cuenta cuántos clientes ya pueden canjearlo", async () => {
+    const elmenu = asProduct(elmenuToken);
+    await asEmbed(donJulio)("POST", "/embed/rewards", { name: "Café gratis", cost: 10 });
+
+    // Dos clientes: uno llega al umbral, el otro no.
+    for (const [phone, amount] of [
+      ["0993111111", 150_000],
+      ["0993222222", 30_000],
+    ] as const) {
+      const card = await elmenu("POST", "/v1/memberships", {
+        merchant: "r-1",
+        phone,
+        phoneVerified: true,
+      });
+      await elmenu("POST", "/v1/events", {
+        merchant: "r-1",
+        idempotencyKey: `ev-${phone}`,
+        type: "order.paid",
+        amount,
+        membership: { id: card.json().membershipId },
+      });
+    }
+
+    const lista = await asEmbed(donJulio)("GET", "/embed/rewards");
+    expect(lista.json().members).toBe(2);
+    // Es el número que le dice al comercio si su umbral tiene sentido.
+    expect(lista.json().rewards[0].can_afford).toBe(1);
+  });
+
+  it("archiva sin borrar, para no romper el historial de canjes", async () => {
+    const creado = await asEmbed(donJulio)("POST", "/embed/rewards", {
+      name: "Café gratis",
+      cost: 10,
+    });
+    const id = creado.json().id;
+
+    await asEmbed(donJulio)("PUT", `/embed/rewards/${id}`, { status: "archived" });
+
+    const lista = await asEmbed(donJulio)("GET", "/embed/rewards");
+    // Sigue existiendo, solo cambió de estado.
+    expect(lista.json().rewards).toHaveLength(1);
+    expect(lista.json().rewards[0].status).toBe("archived");
+  });
+
+  it("un comercio no ve ni archiva los beneficios de otro", async () => {
+    const creado = await asEmbed(donJulio)("POST", "/embed/rewards", {
+      name: "Solo de Don Julio",
+      cost: 10,
+    });
+
+    expect((await asEmbed(laVecina)("GET", "/embed/rewards")).json().rewards).toEqual([]);
+
+    const ajeno = await asEmbed(laVecina)("PUT", `/embed/rewards/${creado.json().id}`, {
+      status: "archived",
+    });
+    expect(ajeno.statusCode).toBe(404);
+  });
+
+  it("rechaza un costo en cero o negativo", async () => {
+    for (const cost of [0, -5]) {
+      const res = await asEmbed(donJulio)("POST", "/embed/rewards", { name: "X", cost });
+      expect(res.statusCode).toBe(400);
+    }
+  });
+});
+
 describe("vencimiento", () => {
   it("rechaza un token vencido", async () => {
     const { token } = await issueEmbedToken(

@@ -30,6 +30,45 @@ export async function enviarCampana(
   return { ok: true };
 }
 
+export async function crearBeneficio(
+  _prev: { error?: string; ok?: boolean } | undefined,
+  formData: FormData,
+): Promise<{ error?: string; ok?: boolean }> {
+  const token = String(formData.get("token") ?? "");
+  const name = String(formData.get("name") ?? "").trim();
+  const cost = Number(formData.get("cost"));
+  const terms = String(formData.get("terms") ?? "").trim();
+
+  if (!token) return { error: "Sesión vencida. Volvé a abrir el módulo." };
+  if (!name) return { error: "Poné un nombre al beneficio." };
+  if (!Number.isInteger(cost) || cost <= 0) {
+    return { error: "El costo tiene que ser un número mayor a cero." };
+  }
+
+  const created = await post<{ id: string }>("/embed/rewards", token, {
+    name,
+    cost,
+    ...(terms ? { terms } : {}),
+  });
+
+  if (!created) {
+    return { error: "No se pudo crear. Revisá que tengas un programa configurado." };
+  }
+
+  revalidatePath("/embed");
+  return { ok: true };
+}
+
+export async function cambiarEstadoBeneficio(formData: FormData): Promise<void> {
+  const token = String(formData.get("token") ?? "");
+  const id = String(formData.get("id") ?? "");
+  const status = String(formData.get("status") ?? "");
+  if (!token || !id) return;
+
+  await put(`/embed/rewards/${encodeURIComponent(id)}`, token, { status });
+  revalidatePath("/embed");
+}
+
 export async function guardarAvisos(formData: FormData): Promise<void> {
   const token = String(formData.get("token") ?? "");
   if (!token) return;

@@ -1485,6 +1485,101 @@ export function createServer(opts: ServerOptions): FastifyInstance {
   });
 
   /**
+   * Catálogo de beneficios, con cuántos clientes ya pueden canjear cada uno.
+   *
+   * Ese último dato es el que le dice al comercio si sus umbrales tienen
+   * sentido. Un catálogo entero en cero significa que nadie llega nunca, y un
+   * programa donde nadie canjea no retiene a nadie — pero sin el número, eso se
+   * descubre recién cuando el cliente deja de volver.
+   */
+  app.get("/embed/rewards", async (request, reply) => {
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const rewards = await rows<{
+      id: string;
+      name: string;
+      cost: number;
+      terms: string | null;
+      status: string;
+      redemptions: number;
+      can_afford: number;
+    }>(
+      db.drizzle,
+      sql`SELECT r.id, r.name, r.cost, r.terms, r.status,
+                 (SELECT count(*)::int FROM redemption rd WHERE rd.reward_id = r.id) AS redemptions,
+                 (SELECT count(*)::int FROM membership m
+                   WHERE m.merchant_id = r.merchant_id AND m.status = 'active'
+                     AND m.balance >= r.cost) AS can_afford
+          FROM reward r
+          WHERE r.merchant_id = ${merchant.id}
+          ORDER BY r.status, r.cost`,
+    );
+
+    const totals = await rows<{ members: number }>(
+      db.drizzle,
+      sql`SELECT count(*)::int AS members FROM membership
+          WHERE merchant_id = ${merchant.id} AND status = 'active'`,
+    );
+
+    return reply.send({ rewards, members: totals[0]?.members ?? 0 });
+  });
+
+  app.post("/embed/rewards", async (request, reply) => {
+    const parsed = z
+      .object({
+        name: z.string().min(1).max(80),
+        cost: z.number().int().positive(),
+        terms: z.string().max(200).optional(),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const program = await activeProgram(merchant.id);
+    if (!program) return reply.code(409).send({ error: "no_active_program" });
+
+    const created = await rows<{ id: string }>(
+      db.drizzle,
+      sql`INSERT INTO reward (program_id, merchant_id, name, cost, terms, status)
+          VALUES (${program.id}, ${merchant.id}, ${parsed.data.name},
+                  ${parsed.data.cost}, ${parsed.data.terms ?? null}, 'active')
+          RETURNING id`,
+    );
+
+    return reply.code(201).send({ id: created[0]?.id });
+  });
+
+  /**
+   * Archiva o reactiva un beneficio.
+   *
+   * No se borra nunca: puede tener canjes que lo referencian, y borrarlo
+   * rompería el registro de qué recibió cada cliente. Archivado deja de
+   * ofrecerse pero el historial sigue siendo legible.
+   */
+  app.put<{ Params: { id: string } }>("/embed/rewards/:id", async (request, reply) => {
+    const parsed = z
+      .object({ status: z.enum(["active", "archived"]) })
+      .safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const updated = await rows<{ id: string }>(
+      db.drizzle,
+      sql`UPDATE reward SET status = ${parsed.data.status}
+          WHERE id = ${request.params.id} AND merchant_id = ${merchant.id}
+          RETURNING id`,
+    );
+
+    if (!updated[0]) return reply.code(404).send({ error: "not_found" });
+    return reply.send({ ok: true });
+  });
+
+  /**
    * Avisos automáticos del comercio, con su estado.
    *
    * `campaign` no aparece: no es automático, lo escribe el comercio.

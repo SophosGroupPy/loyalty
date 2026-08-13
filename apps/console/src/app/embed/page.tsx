@@ -6,15 +6,18 @@ import {
   fetchNotifications,
   fetchProgram,
   fetchReach,
+  fetchRewards,
   fetchSummary,
   type ProgramView,
 } from "../../lib/api";
 import { guardarAvisos } from "./actions";
+import { ListaBeneficios, NuevoBeneficio } from "./beneficios";
 import { Composer, Historial } from "./campanas";
 
 const TABS = [
   { id: "resumen", label: "Resumen" },
   { id: "programa", label: "Programa" },
+  { id: "beneficios", label: "Beneficios" },
   { id: "notificaciones", label: "Notificaciones" },
   { id: "difusion", label: "Difusión" },
 ] as const;
@@ -139,6 +142,7 @@ export default async function EmbedPage({
 
       {tab === "resumen" ? <Resumen summary={summary} /> : null}
       {tab === "programa" ? <Programa token={token} unit={unit} /> : null}
+      {tab === "beneficios" ? <Beneficios token={token} unit={unit} /> : null}
       {tab === "notificaciones" ? <Notificaciones token={token} /> : null}
       {tab === "difusion" ? <Difusion token={token} /> : null}
     </main>
@@ -239,6 +243,35 @@ async function Programa({ token, unit }: { token: string; unit: string }) {
           </div>
         </>
       ) : null}
+    </section>
+  );
+}
+
+async function Beneficios({ token, unit }: { token: string; unit: string }) {
+  const data = await fetchRewards(token);
+
+  if (!data) {
+    return (
+      <section>
+        <div className="panel">
+          <p style={{ margin: 0 }}>Configurá tu programa antes de cargar beneficios.</p>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section>
+      <h2>Qué pueden canjear tus clientes</h2>
+      <ListaBeneficios
+        token={token}
+        rewards={data.rewards}
+        members={data.members}
+        unit={unit}
+      />
+
+      <h2 style={{ marginTop: "1.75rem" }}>Agregar</h2>
+      <NuevoBeneficio token={token} unit={unit} />
     </section>
   );
 }

@@ -275,6 +275,35 @@ button.secondary {
   gap: 1rem;
 }
 
+.fila {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.fila label {
+  min-width: 0;
+}
+
+.composer input[type="number"] {
+  font: inherit;
+  font-size: 0.9375rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  width: 100%;
+}
+
+/* Aviso de que el programa no es alcanzable: no es un error del sistema, es un
+   problema de configuración que el comercio no ve por su cuenta. */
+.panel.aviso {
+  border-color: #d9770655;
+  background: #d977060d;
+  font-size: 0.875rem;
+  margin-bottom: 0.75rem;
+}
+
 .switch input[type="checkbox"] {
   width: 2.4rem;
   height: 1.4rem;
