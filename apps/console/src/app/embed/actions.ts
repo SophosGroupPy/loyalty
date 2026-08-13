@@ -31,6 +31,39 @@ export async function enviarCampana(
   return { ok: true };
 }
 
+export async function guardarAjustes(
+  _prev: { error?: string; ok?: boolean } | undefined,
+  formData: FormData,
+): Promise<{ error?: string; ok?: boolean }> {
+  const token = String(formData.get("token") ?? "");
+  if (!token) return { error: "Sesión vencida. Volvé a abrir el módulo." };
+
+  /** Un campo vacío significa "sin límite", no cero. */
+  const opcional = (k: string): number | null => {
+    const v = String(formData.get(k) ?? "").trim();
+    if (!v) return null;
+    const n = Number(v);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  };
+
+  const silencio = formData.get("silencio") === "on";
+
+  const saved = await put("/embed/settings", token, {
+    dayBoundaryHour: Number(formData.get("dayBoundaryHour") ?? 0),
+    quietHours: silencio
+      ? { from: Number(formData.get("quietFrom") ?? 22), to: Number(formData.get("quietTo") ?? 9) }
+      : null,
+    capPerDay: opcional("capPerDay"),
+    capPerEvent: opcional("capPerEvent"),
+    expiryMonths: opcional("expiryMonths"),
+  });
+
+  if (!saved) return { error: "No se pudo guardar. Revisá los valores." };
+
+  revalidatePath("/embed");
+  return { ok: true };
+}
+
 export async function agregarUbicacion(
   _prev: { error?: string; ok?: boolean } | undefined,
   formData: FormData,

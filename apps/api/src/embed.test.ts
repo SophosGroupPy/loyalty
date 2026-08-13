@@ -671,6 +671,85 @@ describe("ubicaciones", () => {
   });
 });
 
+describe("ajustes del programa", () => {
+  let donJulio: string;
+  let laVecina: string;
+
+  const base = {
+    dayBoundaryHour: 0,
+    quietHours: null,
+    capPerDay: null,
+    capPerEvent: null,
+    expiryMonths: null,
+  };
+
+  beforeEach(async () => {
+    const elmenu = asProduct(elmenuToken);
+    await elmenu("PUT", "/v1/programs", {
+      merchant: "r-2",
+      kind: "points",
+      config: { earn: [{ on: "order.paid", points: 1 }] },
+    });
+    donJulio = (await elmenu("POST", "/v1/embed-tokens", { merchant: "r-1" })).json().token;
+    laVecina = (await elmenu("POST", "/v1/embed-tokens", { merchant: "r-2" })).json().token;
+  });
+
+  it("no borra las reglas de acumulación al guardar", async () => {
+    // Es el riesgo real de esta pantalla: si el guardado reemplazara la config
+    // entera en vez de mezclar, el programa dejaría de acumular en silencio y
+    // nadie se enteraría hasta que un cliente reclamara.
+    const antes = await asEmbed(donJulio)("GET", "/embed/program");
+    expect(antes.json().config.earn).toHaveLength(1);
+
+    await asEmbed(donJulio)("PUT", "/embed/settings", { ...base, capPerDay: 200 });
+
+    const despues = await asEmbed(donJulio)("GET", "/embed/program");
+    expect(despues.json().config.earn).toHaveLength(1);
+    expect(despues.json().config.earn[0].rate.per).toBe(10_000);
+    expect(despues.json().config.caps.perDay).toBe(200);
+  });
+
+  it("guarda la franja de silencio y permite quitarla", async () => {
+    await asEmbed(donJulio)("PUT", "/embed/settings", {
+      ...base,
+      quietHours: { from: 6, to: 18 },
+    });
+    expect((await asEmbed(donJulio)("GET", "/embed/settings")).json().quietHours).toEqual({
+      from: 6,
+      to: 18,
+    });
+
+    await asEmbed(donJulio)("PUT", "/embed/settings", { ...base, quietHours: null });
+    expect((await asEmbed(donJulio)("GET", "/embed/settings")).json().quietHours).toBeNull();
+  });
+
+  it("acepta el corte de día que necesita un local nocturno", async () => {
+    // Con corte a las 6, la 1 AM del sábado se imputa al viernes: sin esto una
+    // salida nocturna se parte en dos días y el tope diario se duplica.
+    await asEmbed(donJulio)("PUT", "/embed/settings", { ...base, dayBoundaryHour: 6 });
+    expect((await asEmbed(donJulio)("GET", "/embed/settings")).json().dayBoundaryHour).toBe(6);
+  });
+
+  it("rechaza valores imposibles", async () => {
+    for (const patch of [
+      { dayBoundaryHour: 24 },
+      { quietHours: { from: 25, to: 9 } },
+      { capPerDay: 0 },
+      { expiryMonths: -3 },
+    ]) {
+      const res = await asEmbed(donJulio)("PUT", "/embed/settings", { ...base, ...patch });
+      expect(res.statusCode, JSON.stringify(patch)).toBe(400);
+    }
+  });
+
+  it("los ajustes de un comercio no tocan los de otro", async () => {
+    await asEmbed(donJulio)("PUT", "/embed/settings", { ...base, capPerDay: 200 });
+
+    const vecino = await asEmbed(laVecina)("GET", "/embed/settings");
+    expect(vecino.json().caps.perDay).toBeNull();
+  });
+});
+
 describe("vencimiento", () => {
   it("rechaza un token vencido", async () => {
     const { token } = await issueEmbedToken(

@@ -10,12 +10,14 @@ import {
   fetchDesign,
   fetchLocations,
   fetchRewards,
+  fetchSettings,
   fetchSummary,
   type ProgramView,
 } from "../../lib/api";
 import { guardarAvisos } from "./actions";
 import { ListaBeneficios, NuevoBeneficio } from "./beneficios";
 import { EditorDiseno } from "./diseno";
+import { EditorAjustes } from "./ajustes";
 import { ListaUbicaciones, NuevaUbicacion } from "./ubicaciones";
 import { Composer, Historial } from "./campanas";
 
@@ -28,6 +30,7 @@ const TABS = [
   { id: "ubicaciones", label: "Ubicaciones" },
   { id: "notificaciones", label: "Notificaciones" },
   { id: "difusion", label: "Difusión" },
+  { id: "ajustes", label: "Ajustes" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -158,6 +161,7 @@ export default async function EmbedPage({
       {tab === "ubicaciones" ? <Ubicaciones token={token} /> : null}
       {tab === "notificaciones" ? <Notificaciones token={token} /> : null}
       {tab === "difusion" ? <Difusion token={token} /> : null}
+      {tab === "ajustes" ? <Ajustes token={token} /> : null}
     </main>
   );
 }
@@ -414,6 +418,51 @@ async function Diseno({ token }: { token: string }) {
         inicial={data.design}
         merchantName={data.merchantName}
       />
+    </section>
+  );
+}
+
+async function Ajustes({ token }: { token: string }) {
+  const settings = await fetchSettings(token);
+
+  if (!settings) {
+    return (
+      <section>
+        <div className="panel">
+          <p style={{ margin: 0 }}>Configurá tu programa antes de ajustar nada.</p>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section>
+      <h2>Cómo funciona tu programa</h2>
+      <EditorAjustes token={token} inicial={settings} />
+
+      {settings.optedOut > 0 ? (
+        <>
+          <h2 style={{ marginTop: "1.75rem" }}>Bajas</h2>
+          <div className="panel">
+            <p style={{ margin: 0 }}>
+              {settings.optedOut}{" "}
+              {settings.optedOut === 1 ? "cliente apagó" : "clientes apagaron"} los
+              avisos desde su propia tarjeta.
+            </p>
+            {/* Es una baja del cliente, no una configuración del comercio: no se
+                puede revertir desde acá y decirlo evita que lo busque. */}
+            <p className="hint" style={{ marginBottom: 0 }}>
+              Es una decisión de cada cliente y no se puede revertir desde el
+              panel. Siguen sumando puntos con normalidad.
+            </p>
+          </div>
+        </>
+      ) : null}
+
+      <p className="hint">
+        Las reglas de acumulación no se editan acá: cambiarlas es rediseñar el
+        programa. Pedilo por soporte y lo ajustamos con vos.
+      </p>
     </section>
   );
 }

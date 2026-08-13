@@ -85,6 +85,19 @@ export interface CampaignRow {
   suppressed: number;
 }
 
+export interface SettingsView {
+  timezone: string;
+  dayBoundaryHour: number;
+  quietHours: { from: number; to: number } | null;
+  caps: { perDay: number | null; perEvent: number | null };
+  expiryMonths: number | null;
+  /** Cuántos clientes apagaron los avisos por su cuenta. */
+  optedOut: number;
+}
+
+export const fetchSettings = (token: string) =>
+  get<SettingsView>("/embed/settings", token);
+
 export interface LocationRow {
   id: string;
   label: string;

@@ -284,6 +284,37 @@ button.secondary {
   min-width: 0;
 }
 
+/* Un label que además es interruptor no se apila: texto a la izquierda, control
+   a la derecha. Sin esto hereda la columna del resto del formulario. */
+.composer label.toggle-row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 0;
+  color: var(--text);
+  font-size: 0.9375rem;
+}
+
+.composer label.toggle-row input[type="checkbox"] {
+  width: 2.4rem;
+  height: 1.4rem;
+  accent-color: #16a34a;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.composer select {
+  font: inherit;
+  font-size: 0.9375rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  width: 100%;
+}
+
 .composer input[type="number"] {
   font: inherit;
   font-size: 0.9375rem;

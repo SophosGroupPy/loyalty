@@ -1583,6 +1583,100 @@ export function createServer(opts: ServerOptions): FastifyInstance {
   );
 
   /**
+   * Ajustes del programa que el comercio puede tocar sin rehacer las reglas.
+   *
+   * Deliberadamente NO incluye las reglas de acumulación: cambiarlas es
+   * rediseñar el programa y merece su propia pantalla. Acá van los parámetros
+   * que se ajustan con la operación andando.
+   */
+  app.get("/embed/settings", async (request, reply) => {
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const found = await rows<{ config: ProgramConfig }>(
+      db.drizzle,
+      sql`SELECT config FROM program
+          WHERE merchant_id = ${merchant.id} AND status = 'active'`,
+    );
+    const config = found[0]?.config;
+    if (!config) return reply.code(404).send({ error: "no_program" });
+
+    return reply.send({
+      timezone: config.timezone ?? "America/Asuncion",
+      dayBoundaryHour: config.dayBoundaryHour ?? 0,
+      quietHours: config.notifications?.quietHours ?? null,
+      caps: { perDay: config.caps?.perDay ?? null, perEvent: config.caps?.perEvent ?? null },
+      expiryMonths: config.expiry?.months ?? null,
+      optedOut: (
+        await rows<{ count: number }>(
+          db.drizzle,
+          sql`SELECT count(*)::int AS count FROM membership
+              WHERE merchant_id = ${merchant.id}
+                AND 'wallet' = ANY (notification_optout)`,
+        )
+      )[0]?.count ?? 0,
+    });
+  });
+
+  app.put("/embed/settings", async (request, reply) => {
+    const parsed = z
+      .object({
+        dayBoundaryHour: z.number().int().min(0).max(23),
+        quietHours: z
+          .object({ from: z.number().int().min(0).max(23), to: z.number().int().min(0).max(23) })
+          .nullable(),
+        capPerDay: z.number().int().positive().nullable(),
+        capPerEvent: z.number().int().positive().nullable(),
+        expiryMonths: z.number().int().positive().max(120).nullable(),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const found = await rows<{ id: string; config: ProgramConfig }>(
+      db.drizzle,
+      sql`SELECT id, config FROM program
+          WHERE merchant_id = ${merchant.id} AND status = 'active'`,
+    );
+    const program = found[0];
+    if (!program) return reply.code(404).send({ error: "no_program" });
+
+    // Se parte de la config existente y se pisan solo estas claves: las reglas
+    // de acumulación no se tocan desde acá, y reemplazar el objeto entero las
+    // borraría sin que nadie lo pida.
+    const config: ProgramConfig = {
+      ...program.config,
+      dayBoundaryHour: parsed.data.dayBoundaryHour,
+      notifications: {
+        ...(program.config.notifications ?? {}),
+        ...(parsed.data.quietHours
+          ? { quietHours: parsed.data.quietHours }
+          : { quietHours: undefined }),
+      },
+      caps: {
+        ...(parsed.data.capPerDay ? { perDay: parsed.data.capPerDay } : {}),
+        ...(parsed.data.capPerEvent ? { perEvent: parsed.data.capPerEvent } : {}),
+      },
+      ...(parsed.data.expiryMonths
+        ? { expiry: { months: parsed.data.expiryMonths } }
+        : { expiry: undefined }),
+    };
+
+    const errores = validateConfig(config);
+    if (errores.length > 0) return reply.code(400).send({ error: "invalid_config", errores });
+
+    await rows(
+      db.drizzle,
+      sql`UPDATE program SET config = ${JSON.stringify(config)}::jsonb, updated_at = now()
+          WHERE id = ${program.id}`,
+    );
+
+    return reply.send({ ok: true });
+  });
+
+  /**
    * Tope de geocercas por comercio.
    *
    * Lo impone Apple: un pase admite 10 ubicaciones. No es una decisión nuestra
