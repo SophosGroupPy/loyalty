@@ -8,6 +8,7 @@ import {
   fetchReach,
   fetchCustomers,
   fetchDesign,
+  fetchLocations,
   fetchRewards,
   fetchSummary,
   type ProgramView,
@@ -15,6 +16,7 @@ import {
 import { guardarAvisos } from "./actions";
 import { ListaBeneficios, NuevoBeneficio } from "./beneficios";
 import { EditorDiseno } from "./diseno";
+import { ListaUbicaciones, NuevaUbicacion } from "./ubicaciones";
 import { Composer, Historial } from "./campanas";
 
 const TABS = [
@@ -23,6 +25,7 @@ const TABS = [
   { id: "beneficios", label: "Beneficios" },
   { id: "clientes", label: "Clientes" },
   { id: "diseno", label: "Diseño" },
+  { id: "ubicaciones", label: "Ubicaciones" },
   { id: "notificaciones", label: "Notificaciones" },
   { id: "difusion", label: "Difusión" },
 ] as const;
@@ -152,6 +155,7 @@ export default async function EmbedPage({
       {tab === "beneficios" ? <Beneficios token={token} unit={unit} /> : null}
       {tab === "clientes" ? <Clientes token={token} sort={sort} q={q} /> : null}
       {tab === "diseno" ? <Diseno token={token} /> : null}
+      {tab === "ubicaciones" ? <Ubicaciones token={token} /> : null}
       {tab === "notificaciones" ? <Notificaciones token={token} /> : null}
       {tab === "difusion" ? <Difusion token={token} /> : null}
     </main>
@@ -410,6 +414,37 @@ async function Diseno({ token }: { token: string }) {
         inicial={data.design}
         merchantName={data.merchantName}
       />
+    </section>
+  );
+}
+
+async function Ubicaciones({ token }: { token: string }) {
+  const data = await fetchLocations(token);
+  if (!data) return null;
+
+  const restantes = data.max - data.locations.length;
+
+  return (
+    <section>
+      <div className="clientes-top">
+        <h2 style={{ margin: 0 }}>Dónde están tus locales</h2>
+        <span className="cond">
+          {data.locations.length} de {data.max}
+        </span>
+      </div>
+
+      {/* Vale decirlo acá: es el único canal que no compite por el cupo diario,
+          así que un comercio que lo ignora está dejando alcance sin usar. */}
+      <p className="hint" style={{ marginTop: 0 }}>
+        Cuando un cliente pasa cerca, su tarjeta aparece sola en la pantalla
+        bloqueada. Lo dispara su propio teléfono, así que no gasta cupo de
+        notificaciones: es el aviso más barato que tenés.
+      </p>
+
+      <ListaUbicaciones token={token} locations={data.locations} />
+
+      <h2 style={{ marginTop: "1.75rem" }}>Agregar</h2>
+      <NuevaUbicacion token={token} restantes={restantes} />
     </section>
   );
 }

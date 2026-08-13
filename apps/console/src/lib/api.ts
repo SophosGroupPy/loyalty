@@ -85,6 +85,27 @@ export interface CampaignRow {
   suppressed: number;
 }
 
+export interface LocationRow {
+  id: string;
+  label: string;
+  latitude: number;
+  longitude: number;
+  relevant_text: string | null;
+  created_at: string;
+}
+
+export const fetchLocations = (token: string) =>
+  get<{ locations: LocationRow[]; max: number }>("/embed/locations", token);
+
+export async function del(path: string, token: string): Promise<boolean> {
+  const response = await fetch(`${API_URL}${path}`, {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  return response.ok;
+}
+
 export interface CustomerRow {
   id: string;
   serial_number: string;

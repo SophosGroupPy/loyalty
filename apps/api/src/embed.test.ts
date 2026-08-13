@@ -33,7 +33,7 @@ async function productToken(clientId: string, secret: string): Promise<string> {
 }
 
 function asProduct(token: string) {
-  return (method: "GET" | "POST" | "PUT", url: string, payload?: unknown) =>
+  return (method: "GET" | "POST" | "PUT" | "DELETE", url: string, payload?: unknown) =>
     app.inject({
       method,
       url,
@@ -43,7 +43,7 @@ function asProduct(token: string) {
 }
 
 function asEmbed(token: string) {
-  return (method: "GET" | "POST" | "PUT", url: string, payload?: unknown) =>
+  return (method: "GET" | "POST" | "PUT" | "DELETE", url: string, payload?: unknown) =>
     app.inject({
       method,
       url,
@@ -583,6 +583,91 @@ describe("base de clientes", () => {
 
     const propio = await asEmbed(donJulio)("GET", `/embed/customers/${id}/history`);
     expect(propio.json().entries.length).toBeGreaterThan(0);
+  });
+});
+
+describe("ubicaciones", () => {
+  let donJulio: string;
+  let laVecina: string;
+
+  beforeEach(async () => {
+    const elmenu = asProduct(elmenuToken);
+    donJulio = (await elmenu("POST", "/v1/embed-tokens", { merchant: "r-1" })).json().token;
+    laVecina = (await elmenu("POST", "/v1/embed-tokens", { merchant: "r-2" })).json().token;
+  });
+
+  it("agrega y lista con el tope visible", async () => {
+    const creada = await asEmbed(donJulio)("POST", "/embed/locations", {
+      label: "Villa Morra",
+      latitude: -25.2965,
+      longitude: -57.5759,
+      relevantText: "Estás cerca de Don Julio",
+    });
+    expect(creada.statusCode, creada.body).toBe(201);
+
+    const lista = await asEmbed(donJulio)("GET", "/embed/locations");
+    expect(lista.json().locations).toHaveLength(1);
+    // El tope se expone para poder mostrarlo antes de que falle el alta 11.
+    expect(lista.json().max).toBe(10);
+  });
+
+  it("corta en diez, que es el tope de Apple por pase", async () => {
+    for (let i = 0; i < 10; i++) {
+      const res = await asEmbed(donJulio)("POST", "/embed/locations", {
+        label: `Sucursal ${i}`,
+        latitude: -25 - i / 100,
+        longitude: -57,
+      });
+      expect(res.statusCode).toBe(201);
+    }
+
+    // Aceptar la 11 sería aceptar en falso: no dispararía nada y nadie se
+    // enteraría.
+    const extra = await asEmbed(donJulio)("POST", "/embed/locations", {
+      label: "Sucursal 11",
+      latitude: -25.5,
+      longitude: -57,
+    });
+    expect(extra.statusCode).toBe(409);
+    expect(extra.json().error).toBe("too_many_locations");
+  });
+
+  it("quitar una libera lugar para otra", async () => {
+    const creada = await asEmbed(donJulio)("POST", "/embed/locations", {
+      label: "Villa Morra",
+      latitude: -25.2965,
+      longitude: -57.5759,
+    });
+
+    await asEmbed(donJulio)("DELETE", `/embed/locations/${creada.json().id}`);
+    expect((await asEmbed(donJulio)("GET", "/embed/locations")).json().locations).toEqual([]);
+  });
+
+  it("rechaza coordenadas fuera de rango", async () => {
+    for (const [lat, lng] of [
+      [95, -57],
+      [-25, 200],
+    ] as const) {
+      const res = await asEmbed(donJulio)("POST", "/embed/locations", {
+        label: "X",
+        latitude: lat,
+        longitude: lng,
+      });
+      expect(res.statusCode).toBe(400);
+    }
+  });
+
+  it("un comercio no ve ni borra las ubicaciones de otro", async () => {
+    const creada = await asEmbed(donJulio)("POST", "/embed/locations", {
+      label: "Villa Morra",
+      latitude: -25.2965,
+      longitude: -57.5759,
+    });
+
+    expect((await asEmbed(laVecina)("GET", "/embed/locations")).json().locations).toEqual([]);
+
+    const ajeno = await asEmbed(laVecina)("DELETE", `/embed/locations/${creada.json().id}`);
+    expect(ajeno.statusCode).toBe(404);
   });
 });
 

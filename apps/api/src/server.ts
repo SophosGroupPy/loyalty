@@ -1582,6 +1582,84 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     },
   );
 
+  /**
+   * Tope de geocercas por comercio.
+   *
+   * Lo impone Apple: un pase admite 10 ubicaciones. No es una decisión nuestra
+   * y no se puede subir. Una cadena con más sucursales tiene que elegir cuáles
+   * entran — por eso el número se muestra en la pantalla en vez de fallar
+   * recién al guardar la número 11.
+   */
+  const MAX_LOCATIONS = 10;
+
+  app.get("/embed/locations", async (request, reply) => {
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const locations = await rows(
+      db.drizzle,
+      sql`SELECT id, label, latitude, longitude, relevant_text, created_at
+          FROM merchant_location
+          WHERE merchant_id = ${merchant.id}
+          ORDER BY created_at`,
+    );
+
+    return reply.send({ locations, max: MAX_LOCATIONS });
+  });
+
+  app.post("/embed/locations", async (request, reply) => {
+    const parsed = z
+      .object({
+        label: z.string().min(1).max(60),
+        latitude: z.number().min(-90).max(90),
+        longitude: z.number().min(-180).max(180),
+        relevantText: z.string().max(80).optional(),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const actuales = await rows<{ count: number }>(
+      db.drizzle,
+      sql`SELECT count(*)::int AS count FROM merchant_location
+          WHERE merchant_id = ${merchant.id}`,
+    );
+
+    if ((actuales[0]?.count ?? 0) >= MAX_LOCATIONS) {
+      return reply.code(409).send({
+        error: "too_many_locations",
+        message: `Máximo ${MAX_LOCATIONS} ubicaciones: es el tope que impone Apple por pase.`,
+      });
+    }
+
+    const created = await rows<{ id: string }>(
+      db.drizzle,
+      sql`INSERT INTO merchant_location (merchant_id, label, latitude, longitude, relevant_text)
+          VALUES (${merchant.id}, ${parsed.data.label}, ${parsed.data.latitude},
+                  ${parsed.data.longitude}, ${parsed.data.relevantText ?? null})
+          RETURNING id`,
+    );
+
+    return reply.code(201).send({ id: created[0]?.id });
+  });
+
+  app.delete<{ Params: { id: string } }>("/embed/locations/:id", async (request, reply) => {
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const removed = await rows<{ id: string }>(
+      db.drizzle,
+      sql`DELETE FROM merchant_location
+          WHERE id = ${request.params.id} AND merchant_id = ${merchant.id}
+          RETURNING id`,
+    );
+
+    if (!removed[0]) return reply.code(404).send({ error: "not_found" });
+    return reply.send({ ok: true });
+  });
+
   const HEX = /^#[0-9a-fA-F]{6}$/;
 
   /**

@@ -2,7 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 
-import { post, put } from "../../lib/api";
+import { del, post, put } from "../../lib/api";
+import { parseCoords } from "./coords";
 
 /**
  * Server actions de la consola.
@@ -28,6 +29,51 @@ export async function enviarCampana(
 
   revalidatePath("/embed");
   return { ok: true };
+}
+
+export async function agregarUbicacion(
+  _prev: { error?: string; ok?: boolean } | undefined,
+  formData: FormData,
+): Promise<{ error?: string; ok?: boolean }> {
+  const token = String(formData.get("token") ?? "");
+  const label = String(formData.get("label") ?? "").trim();
+  const coords = parseCoords(String(formData.get("coords") ?? ""));
+  const relevantText = String(formData.get("relevantText") ?? "").trim();
+
+  if (!token) return { error: "Sesión vencida. Volvé a abrir el módulo." };
+  if (!label) return { error: "Poné un nombre a la sucursal." };
+  if (!coords) {
+    return {
+      error:
+        "No pude leer las coordenadas. Pegá el link de Google Maps, o el par de números que aparece al hacer clic derecho sobre el punto.",
+    };
+  }
+  if (Math.abs(coords.lat) > 90 || Math.abs(coords.lng) > 180) {
+    return { error: "Esas coordenadas están fuera de rango. ¿Están al revés?" };
+  }
+
+  const creada = await post<{ id: string }>("/embed/locations", token, {
+    label,
+    latitude: coords.lat,
+    longitude: coords.lng,
+    ...(relevantText ? { relevantText } : {}),
+  });
+
+  if (!creada) {
+    return { error: "No se pudo agregar. Puede que ya tengas el máximo de 10." };
+  }
+
+  revalidatePath("/embed");
+  return { ok: true };
+}
+
+export async function quitarUbicacion(formData: FormData): Promise<void> {
+  const token = String(formData.get("token") ?? "");
+  const id = String(formData.get("id") ?? "");
+  if (!token || !id) return;
+
+  await del(`/embed/locations/${encodeURIComponent(id)}`, token);
+  revalidatePath("/embed");
 }
 
 export async function guardarDiseno(
