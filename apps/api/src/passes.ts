@@ -36,7 +36,7 @@ export const DEFAULT_DESIGN: CardDesign = {
 export interface PassService {
   /** `false` cuando no hay credenciales de Google configuradas. */
   readonly enabled: boolean;
-  issueGooglePass(membershipId: string, merchantId: string): Promise<string>;
+  issueGooglePass(membershipId: string, merchantId: string): Promise<IssueOutcome>;
   /**
    * Empuja el saldo al pase.
    *
@@ -53,6 +53,20 @@ export interface PassService {
     message: { id: string; header: string; body: string },
   ): Promise<void>;
   pendingSync(limit?: number): Promise<{ membershipId: string; drift: number }[]>;
+}
+
+export interface IssueOutcome {
+  saveUrl: string;
+  /**
+   * `false` si no se pudo registrar la clase en Google.
+   *
+   * El link igual sirve para guardar la tarjeta, porque la clase viaja adentro.
+   * Pero sin la clase registrada **las actualizaciones posteriores no llegan**:
+   * el saldo queda congelado en el valor de emisión. Hay que exponerlo, no
+   * tragarlo — un "emitido con éxito" sobre esto sería mentira.
+   */
+  classRegistered: boolean;
+  classError?: string;
 }
 
 export type SyncOutcome =
@@ -173,14 +187,21 @@ export function createPassService(
         tier: card.tier,
       });
 
-      // La clase se registra igual por API: el link la lleva para el primer
-      // guardado, pero las actualizaciones posteriores necesitan que exista.
+      // La clase se registra por API además de viajar en el link: el link basta
+      // para el primer guardado, pero las actualizaciones de saldo necesitan que
+      // la clase exista del lado de Google.
+      let classRegistered = true;
+      let classError: string | undefined;
+
       if (client) {
         try {
           await client.upsertClass(loyaltyClass);
         } catch (error) {
-          // Que falle el registro de la clase no debe impedir entregar el link:
-          // el pase igual se guarda porque viaja completo adentro.
+          // Que falle el registro no impide entregar el link —el pase viaja
+          // completo adentro—, pero sí se informa: una tarjeta que nunca va a
+          // actualizarse no es una emisión exitosa.
+          classRegistered = false;
+          classError = messageOf(error);
           await recordError(db, membershipId, error);
         }
       }
@@ -202,7 +223,11 @@ export function createPassService(
                   last_error = NULL`,
       );
 
-      return link;
+      return {
+        saveUrl: link,
+        classRegistered,
+        ...(classError ? { classError } : {}),
+      };
     },
 
     /**

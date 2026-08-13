@@ -236,10 +236,25 @@ async function main(): Promise<void> {
       console.log(`  \x1b[31m✗\x1b[0m  Falló la emisión (HTTP ${pass.statusCode}):`);
       console.log(`     ${pass.body}`);
     } else {
+      const { saveUrl, classRegistered, classError } = pass.json();
       ok(`Issuer ${googleWallet.issuerId}`);
+
+      if (classRegistered) {
+        ok("Clase registrada en Google — la tarjeta va a recibir actualizaciones");
+      } else {
+        console.log(`  \x1b[31m✗\x1b[0m  No se pudo registrar la clase en Google:`);
+        console.log(`     ${classError}`);
+        console.log("");
+        console.log("     El link de abajo igual guarda la tarjeta, porque la clase");
+        console.log("     viaja adentro. Pero \x1b[1mel saldo va a quedar congelado\x1b[0m:");
+        console.log("     sin la clase registrada, las actualizaciones no llegan.");
+        console.log("");
+        console.log("     Corré \x1b[36mpnpm check:google\x1b[0m para diagnosticar.");
+      }
+
       console.log("\n  Abrí este link en Chrome con la cuenta de prueba,");
       console.log("  o en el emulador de Android:\n");
-      console.log(`\x1b[36m${pass.json().saveUrl}\x1b[0m`);
+      console.log(`\x1b[36m${saveUrl}\x1b[0m`);
       console.log("\n  Verificá que la tarjeta diga «Don Julio» y no Sophos.");
     }
   }

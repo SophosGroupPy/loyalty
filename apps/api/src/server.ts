@@ -604,8 +604,8 @@ export function createServer(opts: ServerOptions): FastifyInstance {
         .send({ error: "membership_not_found", message: "Sin tarjeta en este comercio." });
     }
 
-    const saveUrl = await passes.issueGooglePass(membershipId, merchant.id);
-    return reply.code(201).send({ platform: "google", saveUrl, membershipId });
+    const issued = await passes.issueGooglePass(membershipId, merchant.id);
+    return reply.code(201).send({ platform: "google", membershipId, ...issued });
   });
 
   /** Pases cuyo saldo quedó atrás del real. Es la cola de reconciliación. */
