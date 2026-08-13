@@ -52,7 +52,11 @@ export interface PassService {
     membershipId: string,
     message: { id: string; header: string; body: string },
   ): Promise<void>;
-  pendingSync(limit?: number): Promise<{ membershipId: string; drift: number }[]>;
+  /** Con `productId`, se limita a los pases de ese producto. */
+  pendingSync(
+    limit?: number,
+    productId?: string,
+  ): Promise<{ membershipId: string; drift: number }[]>;
 }
 
 export interface IssueOutcome {
@@ -306,16 +310,20 @@ export function createPassService(
      * Es la cola de reconciliación: si Google estuvo caído mientras se acumulaba,
      * acá aparecen los pases a reintentar.
      */
-    async pendingSync(limit = 100) {
+    async pendingSync(limit = 100, productId?: string) {
       const found = await rows<{ membership_id: string; drift: number }>(
         db.drizzle,
         sql`SELECT pi.membership_id,
                    (m.balance - COALESCE(pi.last_synced_balance, 0)) AS drift
             FROM pass_instance pi
             JOIN membership m ON m.id = pi.membership_id
+            JOIN merchant mer ON mer.id = pi.merchant_id
             WHERE pi.state = 'active'
               AND pi.platform = 'google'
               AND m.balance IS DISTINCT FROM pi.last_synced_balance
+              -- Sin productId devuelve todo el ecosistema: solo lo llama el
+              -- back-office. Los productos siempre lo pasan.
+              AND (${productId ?? null}::uuid IS NULL OR mer.product_id = ${productId ?? null}::uuid)
             ORDER BY pi.last_synced_at NULLS FIRST
             LIMIT ${limit}`,
       );

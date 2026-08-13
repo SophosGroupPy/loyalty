@@ -170,6 +170,62 @@ export async function verifyEmbedToken(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Operaciones de Sophos
+// ---------------------------------------------------------------------------
+
+/**
+ * Tercer issuer, separado de los de producto y consola por el mismo motivo:
+ * la librería rechaza el que no coincide, así que ninguno de los tres puede
+ * usarse en lugar de otro por más que los firme la misma clave.
+ */
+const ADMIN_ISSUER = "sophos-loyalty/admin";
+
+export interface AdminClaims {
+  operator: string;
+}
+
+/** Emite una sesión de back-office. Vive poco: ve datos de todo el ecosistema. */
+export async function issueAdminToken(
+  signingKey: Uint8Array,
+  operator: string,
+  ttlSeconds = 28_800,
+): Promise<{ token: string; expiresIn: number }> {
+  const token = await new SignJWT({})
+    .setProtectedHeader({ alg: "HS256" })
+    .setSubject(operator)
+    .setIssuer(ADMIN_ISSUER)
+    .setIssuedAt()
+    .setExpirationTime(`${ttlSeconds}s`)
+    .sign(signingKey);
+
+  return { token, expiresIn: ttlSeconds };
+}
+
+export async function verifyAdminToken(
+  signingKey: Uint8Array,
+  token: string,
+): Promise<AdminClaims | null> {
+  try {
+    const { payload } = await jwtVerify(token, signingKey, { issuer: ADMIN_ISSUER });
+    return payload.sub ? { operator: payload.sub } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Compara la clave maestra de administración en tiempo constante.
+ *
+ * Sin esto, el tiempo de respuesta revelaría cuántos caracteres iniciales
+ * acertó quien la esté probando.
+ */
+export function adminKeyMatches(provided: string, expected: string): boolean {
+  const a = Buffer.from(provided, "utf8");
+  const b = Buffer.from(expected, "utf8");
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 export interface ResolvedMerchant {
   id: string;
   externalId: string;

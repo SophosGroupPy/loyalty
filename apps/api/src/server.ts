@@ -20,11 +20,16 @@ import { validateConfig, type ProgramConfig } from "@sophos/rules";
 import {
   authenticateProduct,
   issueEmbedToken,
+  adminKeyMatches,
+  hashSecret,
+  issueAdminToken,
   issueToken,
   resolveMerchant,
+  verifyAdminToken,
   verifyEmbedToken,
   verifyToken,
   type EmbedClaims,
+  type AdminClaims,
   type ResolvedMerchant,
   type TokenClaims,
 } from "./auth.js";
@@ -49,6 +54,8 @@ declare module "fastify" {
     claims?: TokenClaims;
     /** Sesión de consola embebida. El comercio sale de acá y de ningún otro lado. */
     embed?: EmbedClaims;
+    /** Sesión de back-office de Sophos. Ve todo el ecosistema. */
+    admin?: AdminClaims;
   }
 }
 
@@ -62,6 +69,12 @@ export interface ServerOptions {
   fetchImpl?: typeof fetch;
   /** Permite sustituir el servicio completo en los tests. */
   passService?: PassService;
+  /**
+   * Clave maestra del back-office. Sin ella, `/admin/session` responde 503 y el
+   * back-office queda deshabilitado — que es lo correcto en un entorno que no
+   * lo necesita.
+   */
+  adminKey?: string;
   /**
    * Reloj del servidor. Inyectable para que los tests controlen cuándo se
    * agenda un aviso.
@@ -105,13 +118,6 @@ export function createServer(opts: ServerOptions): FastifyInstance {
   const otpSender = opts.otpSender ?? createConsoleOtpSender();
 
   /**
-   * Empuja el saldo al pase sin bloquear la respuesta ni poder romperla.
-   *
-   * El cliente ya consumió y sus puntos le corresponden: que Google esté caído
-   * no puede convertir una acumulación exitosa en un error. El desfasaje queda
-   * registrado y lo levanta la reconciliación.
-   */
-  /**
    * Encola un webhook sin bloquear la respuesta ni poder romperla.
    *
    * Es distinto de `enqueue`, que avisa al **cliente**: esto le avisa al
@@ -146,6 +152,13 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     return found[0] ?? null;
   }
 
+  /**
+   * Empuja el saldo al pase sin bloquear la respuesta ni poder romperla.
+   *
+   * El cliente ya consumió y sus puntos le corresponden: que Google esté caído
+   * no puede convertir una acumulación exitosa en un error. El desfasaje queda
+   * registrado y lo levanta la reconciliación.
+   */
   function syncPassInBackground(membershipId: string): void {
     void passes.syncGooglePass(membershipId).catch((error) => {
       app.log.error({ err: error, membershipId }, "falló la sincronización del pase");
@@ -200,6 +213,31 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     }
 
     request.embed = embed;
+  });
+
+  /**
+   * Autenticación del back-office de Sophos.
+   *
+   * Estas rutas ven **todo el ecosistema**, así que no pueden compartir
+   * credencial con los productos. Antes vivían bajo `/v1/` y bastaba un token
+   * de producto: eso permitía que ElMenu listara tarjetas de Noctu, consumiera
+   * sus reintentos de webhook y gastara el cupo diario de notificaciones de sus
+   * clientes.
+   */
+  app.addHook("preHandler", async (request, reply) => {
+    if (!request.url.startsWith("/admin/") || request.url === "/admin/session") return;
+
+    const header = request.headers.authorization;
+    const token = header?.startsWith("Bearer ") ? header.slice(7) : null;
+    const claims = token ? await verifyAdminToken(signingKey, token) : null;
+
+    if (!claims) {
+      return reply
+        .code(401)
+        .send({ error: "unauthorized", message: "Se requiere una sesión de administración." });
+    }
+
+    request.admin = claims;
   });
 
   /** Comercio de la sesión de consola, con sus datos de marca. */
@@ -735,10 +773,10 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     });
   });
 
-  /** Corre la cola de entrega. Lo llama un worker o un cron. */
-  app.post("/v1/webhooks/deliver", async (_request, reply) => {
-    return reply.send(await deliverDue(db, { ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}) }));
-  });
+  // La entrega de webhooks y el despacho de notificaciones se movieron a
+  // /admin/: son operaciones de todo el ecosistema y con token de producto
+  // permitían que uno consumiera los reintentos y el cupo de notificaciones del
+  // otro.
 
   // --------------------------------------------------------------------------
   // Diseño de la tarjeta, ubicaciones y emisión del pase
@@ -850,9 +888,14 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     return reply.code(201).send({ platform: "google", membershipId, ...issued });
   });
 
-  /** Pases cuyo saldo quedó atrás del real. Es la cola de reconciliación. */
-  app.get("/v1/passes/pending-sync", async (_request, reply) => {
-    return reply.send({ passes: await passes.pendingSync() });
+  /**
+   * Pases del producto que consulta cuyo saldo quedó atrás del real.
+   *
+   * Filtrado por producto: antes devolvía los de todo el ecosistema, así que un
+   * competidor podía estimar el volumen de tarjetas activas del otro.
+   */
+  app.get("/v1/passes/pending-sync", async (request, reply) => {
+    return reply.send({ passes: await passes.pendingSync(100, request.claims!.productId) });
   });
 
   // --------------------------------------------------------------------------
@@ -964,15 +1007,181 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     return reply.send(await campaignReport(db, request.params.id));
   });
 
-  /**
-   * Corre una pasada del despachador.
-   *
-   * Se expone como endpoint para poder dispararlo desde un cron o un worker sin
-   * montar todavía la infraestructura de colas. En producción esto lo va a
-   * llamar el worker cada pocos minutos.
-   */
-  app.post("/v1/notifications/dispatch", async (_request, reply) => {
+  // --------------------------------------------------------------------------
+  // Back-office de Sophos
+  //
+  // Ve los tres niveles de la jerarquía: productos → comercios → clientes. Es
+  // la única superficie que cruza productos, y por eso tiene credencial propia.
+  // --------------------------------------------------------------------------
+
+  /** Canjea la clave maestra por una sesión de back-office. */
+  app.post("/admin/session", async (request, reply) => {
+    const parsed = z.object({ key: z.string().min(1), operator: z.string().min(1) })
+      .safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const expected = opts.adminKey ?? process.env.ADMIN_API_KEY;
+    if (!expected) {
+      return reply.code(503).send({
+        error: "admin_disabled",
+        message: "El back-office no está habilitado: falta ADMIN_API_KEY.",
+      });
+    }
+
+    if (!adminKeyMatches(parsed.data.key, expected)) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+
+    // El operador queda en el token para poder atribuir cada acción; el
+    // back-office puede suspender comercios y ver datos de todo el ecosistema.
+    return reply.send(await issueAdminToken(signingKey, parsed.data.operator));
+  });
+
+  /** Panorama del ecosistema: los tres niveles de una. */
+  app.get("/admin/overview", async (_request, reply) => {
+    const products = await rows<{
+      id: string;
+      slug: string;
+      name: string;
+      merchants: number;
+      active_programs: number;
+      cards: number;
+      outstanding: number;
+    }>(
+      db.drizzle,
+      sql`SELECT p.id, p.slug, p.name,
+                 count(DISTINCT m.id)::int AS merchants,
+                 count(DISTINCT pr.id) FILTER (WHERE pr.status = 'active')::int AS active_programs,
+                 count(DISTINCT ms.id)::int AS cards,
+                 COALESCE(sum(ms.balance), 0)::int AS outstanding
+          FROM product p
+          LEFT JOIN merchant m ON m.product_id = p.id
+          LEFT JOIN program pr ON pr.merchant_id = m.id
+          LEFT JOIN membership ms ON ms.merchant_id = m.id
+          GROUP BY p.id, p.slug, p.name
+          ORDER BY p.slug`,
+    );
+
+    // El grafo de identidad: cuánta gente tiene tarjeta en más de un comercio.
+    // Es el activo que ningún comercio puede replicar por su cuenta, y hasta
+    // ahora no había forma de mirarlo.
+    const graph = await rows<{ people: number; multi: number; cross_product: number }>(
+      db.drizzle,
+      sql`WITH por_persona AS (
+            SELECT ms.person_id,
+                   count(DISTINCT ms.merchant_id) AS comercios,
+                   count(DISTINCT m.product_id) AS productos
+            FROM membership ms
+            JOIN merchant m ON m.id = ms.merchant_id
+            GROUP BY ms.person_id
+          )
+          SELECT count(*)::int AS people,
+                 count(*) FILTER (WHERE comercios > 1)::int AS multi,
+                 count(*) FILTER (WHERE productos > 1)::int AS cross_product
+          FROM por_persona`,
+    );
+
+    return reply.send({ products, identityGraph: graph[0] ?? null });
+  });
+
+  /** Qué está roto ahora mismo, en todo el ecosistema. */
+  app.get("/admin/health", async (_request, reply) => {
+    const [passes_, webhooks, notifications] = await Promise.all([
+      rows<{ drifted: number; errored: number }>(
+        db.drizzle,
+        sql`SELECT count(*) FILTER (
+                     WHERE m.balance IS DISTINCT FROM pi.last_synced_balance)::int AS drifted,
+                   count(*) FILTER (WHERE pi.last_error IS NOT NULL)::int AS errored
+            FROM pass_instance pi
+            JOIN membership m ON m.id = pi.membership_id
+            WHERE pi.state = 'active'`,
+      ),
+      rows<{ pending: number; exhausted: number }>(
+        db.drizzle,
+        sql`SELECT count(*) FILTER (WHERE status = 'pending')::int AS pending,
+                   count(*) FILTER (WHERE status = 'exhausted')::int AS exhausted
+            FROM webhook_delivery`,
+      ),
+      rows<{ pending: number; suppressed: number }>(
+        db.drizzle,
+        sql`SELECT count(*) FILTER (
+                     WHERE sent_at IS NULL AND suppressed_reason IS NULL)::int AS pending,
+                   count(*) FILTER (WHERE suppressed_reason = 'budget_exhausted')::int AS suppressed
+            FROM notification`,
+      ),
+    ]);
+
+    return reply.send({
+      passes: passes_[0] ?? { drifted: 0, errored: 0 },
+      webhooks: webhooks[0] ?? { pending: 0, exhausted: 0 },
+      notifications: notifications[0] ?? { pending: 0, suppressed: 0 },
+    });
+  });
+
+  /** Comercios de todo el ecosistema, con su producto. */
+  app.get("/admin/merchants", async (_request, reply) => {
+    const merchants = await rows(
+      db.drizzle,
+      sql`SELECT m.id, m.external_id, m.slug, m.display_name, m.legal_name,
+                 p.slug AS product,
+                 pr.kind AS program_kind,
+                 count(ms.id)::int AS cards,
+                 COALESCE(sum(ms.balance), 0)::int AS outstanding,
+                 max(ms.issued_at) AS last_card_at
+          FROM merchant m
+          JOIN product p ON p.id = m.product_id
+          LEFT JOIN program pr ON pr.merchant_id = m.id AND pr.status = 'active'
+          LEFT JOIN membership ms ON ms.merchant_id = m.id
+          GROUP BY m.id, m.external_id, m.slug, m.display_name, m.legal_name,
+                   p.slug, pr.kind
+          ORDER BY p.slug, m.display_name`,
+    );
+
+    return reply.send({ merchants });
+  });
+
+  /** Alta de un producto integrador. Devuelve el secreto una sola vez. */
+  app.post("/admin/products", async (request, reply) => {
+    const parsed = z
+      .object({ slug: z.string().min(2).max(40), name: z.string().min(2) })
+      .safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const clientId = `${parsed.data.slug}-${randomBytes(6).toString("hex")}`;
+    const clientSecret = randomBytes(32).toString("base64url");
+
+    const created = await rows<{ id: string }>(
+      db.drizzle,
+      sql`INSERT INTO product (slug, name, client_id, client_secret_hash)
+          VALUES (${parsed.data.slug}, ${parsed.data.name}, ${clientId},
+                  ${await hashSecret(clientSecret)})
+          RETURNING id`,
+    );
+
+    return reply.code(201).send({
+      id: created[0]?.id,
+      slug: parsed.data.slug,
+      clientId,
+      // Una sola vez: se guarda hasheado y no hay forma de recuperarlo.
+      clientSecret,
+    });
+  });
+
+  /** Corre el despachador de notificaciones de todo el ecosistema. */
+  app.post("/admin/notifications/dispatch", async (_request, reply) => {
     return reply.send(await dispatchDue(db, sender));
+  });
+
+  /** Corre la cola de entrega de webhooks de todo el ecosistema. */
+  app.post("/admin/webhooks/deliver", async (_request, reply) => {
+    return reply.send(
+      await deliverDue(db, { ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}) }),
+    );
+  });
+
+  /** Pases desfasados de todo el ecosistema. */
+  app.get("/admin/passes/pending-sync", async (_request, reply) => {
+    return reply.send({ passes: await passes.pendingSync(200) });
   });
 
   // --------------------------------------------------------------------------
