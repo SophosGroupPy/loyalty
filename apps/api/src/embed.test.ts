@@ -415,6 +415,89 @@ describe("beneficios desde la consola", () => {
   });
 });
 
+describe("diseño de la tarjeta", () => {
+  let donJulio: string;
+  let laVecina: string;
+
+  const valido = {
+    programName: "Puntos Don Julio",
+    logoUrl: "https://cdn.test/logo.png",
+    backgroundColor: "#DC2626",
+    balanceLabel: "Puntos",
+    newsLabel: "Novedades",
+    foregroundColor: "#FFFFFF",
+    labelColor: "#FFFFFF",
+  };
+
+  beforeEach(async () => {
+    const elmenu = asProduct(elmenuToken);
+    await elmenu("PUT", "/v1/programs", {
+      merchant: "r-2",
+      kind: "stamps",
+      config: { earn: [{ on: "order.paid", stamps: 1 }], rewardAt: 10 },
+    });
+    donJulio = (await elmenu("POST", "/v1/embed-tokens", { merchant: "r-1" })).json().token;
+    laVecina = (await elmenu("POST", "/v1/embed-tokens", { merchant: "r-2" })).json().token;
+  });
+
+  it("devuelve valores por defecto usables antes de configurar nada", async () => {
+    const res = await asEmbed(donJulio)("GET", "/embed/design");
+
+    expect(res.statusCode).toBe(200);
+    // La pantalla necesita algo que dibujar desde el primer momento.
+    expect(res.json().design.programName).toBe("Don Julio");
+    expect(res.json().design.backgroundColor).toMatch(/^#[0-9A-F]{6}$/i);
+    expect(res.json().design.newsLabel).toBe("Novedades");
+  });
+
+  it("adapta la etiqueta del saldo al tipo de programa", async () => {
+    expect((await asEmbed(donJulio)("GET", "/embed/design")).json().design.balanceLabel).toBe(
+      "Puntos",
+    );
+    expect((await asEmbed(laVecina)("GET", "/embed/design")).json().design.balanceLabel).toBe(
+      "Sellos",
+    );
+  });
+
+  it("guarda y devuelve lo guardado", async () => {
+    const guardado = await asEmbed(donJulio)("PUT", "/embed/design", {
+      ...valido,
+      backgroundColor: "#FFE066",
+      foregroundColor: "#3D2B00",
+    });
+    expect(guardado.statusCode, guardado.body).toBe(200);
+
+    const leido = await asEmbed(donJulio)("GET", "/embed/design");
+    expect(leido.json().design.backgroundColor).toBe("#FFE066");
+    expect(leido.json().design.foregroundColor).toBe("#3D2B00");
+  });
+
+  it("no deja vaciar el campo de novedades", async () => {
+    // En Apple es el único vehículo de notificación; sin él la tarjeta queda
+    // muda y agregarlo después obliga a reemitir todos los pases.
+    const res = await asEmbed(donJulio)("PUT", "/embed/design", { ...valido, newsLabel: "" });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("rechaza colores que no sean hex de seis dígitos", async () => {
+    for (const color of ["rojo", "#FFF", "rgb(0,0,0)", ""]) {
+      const res = await asEmbed(donJulio)("PUT", "/embed/design", {
+        ...valido,
+        backgroundColor: color,
+      });
+      expect(res.statusCode, `aceptó ${color}`).toBe(400);
+    }
+  });
+
+  it("el diseño de un comercio no toca el de otro", async () => {
+    await asEmbed(donJulio)("PUT", "/embed/design", { ...valido, backgroundColor: "#111111" });
+
+    const vecino = await asEmbed(laVecina)("GET", "/embed/design");
+    expect(vecino.json().design.backgroundColor).not.toBe("#111111");
+    expect(vecino.json().merchantName).toBe("La Vecina");
+  });
+});
+
 describe("vencimiento", () => {
   it("rechaza un token vencido", async () => {
     const { token } = await issueEmbedToken(

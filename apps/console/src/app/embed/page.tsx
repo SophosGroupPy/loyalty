@@ -6,18 +6,21 @@ import {
   fetchNotifications,
   fetchProgram,
   fetchReach,
+  fetchDesign,
   fetchRewards,
   fetchSummary,
   type ProgramView,
 } from "../../lib/api";
 import { guardarAvisos } from "./actions";
 import { ListaBeneficios, NuevoBeneficio } from "./beneficios";
+import { EditorDiseno } from "./diseno";
 import { Composer, Historial } from "./campanas";
 
 const TABS = [
   { id: "resumen", label: "Resumen" },
   { id: "programa", label: "Programa" },
   { id: "beneficios", label: "Beneficios" },
+  { id: "diseno", label: "Diseño" },
   { id: "notificaciones", label: "Notificaciones" },
   { id: "difusion", label: "Difusión" },
 ] as const;
@@ -143,6 +146,7 @@ export default async function EmbedPage({
       {tab === "resumen" ? <Resumen summary={summary} /> : null}
       {tab === "programa" ? <Programa token={token} unit={unit} /> : null}
       {tab === "beneficios" ? <Beneficios token={token} unit={unit} /> : null}
+      {tab === "diseno" ? <Diseno token={token} /> : null}
       {tab === "notificaciones" ? <Notificaciones token={token} /> : null}
       {tab === "difusion" ? <Difusion token={token} /> : null}
     </main>
@@ -272,6 +276,30 @@ async function Beneficios({ token, unit }: { token: string; unit: string }) {
 
       <h2 style={{ marginTop: "1.75rem" }}>Agregar</h2>
       <NuevoBeneficio token={token} unit={unit} />
+    </section>
+  );
+}
+
+async function Diseno({ token }: { token: string }) {
+  const data = await fetchDesign(token);
+  if (!data) {
+    return (
+      <section>
+        <div className="panel">
+          <p style={{ margin: 0 }}>No se pudo cargar el diseño.</p>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section>
+      <h2>Cómo se ve la tarjeta de tus clientes</h2>
+      <EditorDiseno
+        token={token}
+        inicial={data.design}
+        merchantName={data.merchantName}
+      />
     </section>
   );
 }

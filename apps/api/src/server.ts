@@ -1484,6 +1484,72 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     return reply.send({ kind: program.kind, config: program.config });
   });
 
+  const HEX = /^#[0-9a-fA-F]{6}$/;
+
+  /**
+   * Diseño de la tarjeta, con los valores por defecto ya resueltos.
+   *
+   * Se devuelven completos y no `null`: la pantalla necesita algo que dibujar
+   * desde el primer momento, y un comercio recién dado de alta tiene que poder
+   * ver su tarjeta antes de tocar nada.
+   */
+  app.get("/embed/design", async (request, reply) => {
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const stored = (merchant.design ?? {}) as Partial<CardDesign>;
+    const program = await activeProgram(merchant.id);
+    const esSellos = program?.kind === "stamps";
+
+    return reply.send({
+      design: {
+        programName: stored.programName || merchant.display_name,
+        logoUrl: stored.logoUrl ?? "",
+        backgroundColor: stored.backgroundColor ?? "#1F2937",
+        balanceLabel: stored.balanceLabel || (esSellos ? "Sellos" : "Puntos"),
+        newsLabel: stored.newsLabel || "Novedades",
+        foregroundColor: stored.foregroundColor ?? "#FFFFFF",
+        labelColor: stored.labelColor ?? "#FFFFFF",
+        logoText: stored.logoText ?? "",
+        heroImageUrl: stored.heroImageUrl ?? "",
+        stripImageUrl: stored.stripImageUrl ?? "",
+      },
+      merchantName: merchant.display_name,
+      unit: esSellos ? "stamps" : "points",
+    });
+  });
+
+  app.put("/embed/design", async (request, reply) => {
+    const parsed = z
+      .object({
+        programName: z.string().min(1).max(60),
+        logoUrl: z.string().url().or(z.literal("")),
+        backgroundColor: z.string().regex(HEX),
+        balanceLabel: z.string().min(1).max(20),
+        // Se acepta renombrarlo, nunca vaciarlo: en Apple es el único vehículo
+        // de notificación y sumarlo después obliga a reemitir todos los pases.
+        newsLabel: z.string().min(1).max(20),
+        foregroundColor: z.string().regex(HEX),
+        labelColor: z.string().regex(HEX),
+        logoText: z.string().max(30).optional(),
+        heroImageUrl: z.string().url().or(z.literal("")).optional(),
+        stripImageUrl: z.string().url().or(z.literal("")).optional(),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    await rows(
+      db.drizzle,
+      sql`UPDATE merchant SET design = ${JSON.stringify(parsed.data)}::jsonb
+          WHERE id = ${merchant.id}`,
+    );
+
+    return reply.send({ ok: true, design: parsed.data });
+  });
+
   /**
    * Catálogo de beneficios, con cuántos clientes ya pueden canjear cada uno.
    *
@@ -1753,10 +1819,12 @@ export function createServer(opts: ServerOptions): FastifyInstance {
   // Helpers con acceso a la conexión
   // --------------------------------------------------------------------------
 
-  async function activeProgram(merchantId: string): Promise<{ id: string } | null> {
-    const found = await rows<{ id: string }>(
+  async function activeProgram(
+    merchantId: string,
+  ): Promise<{ id: string; kind: "points" | "stamps" } | null> {
+    const found = await rows<{ id: string; kind: "points" | "stamps" }>(
       db.drizzle,
-      sql`SELECT id FROM program WHERE merchant_id = ${merchantId} AND status = 'active'`,
+      sql`SELECT id, kind FROM program WHERE merchant_id = ${merchantId} AND status = 'active'`,
     );
     return found[0] ?? null;
   }

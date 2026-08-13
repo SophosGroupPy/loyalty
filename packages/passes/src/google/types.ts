@@ -30,6 +30,30 @@ export interface CardDesign {
    * todos los pases de Apple.
    */
   newsLabel: string;
+
+  // -------------------------------------------------------------------------
+  // Campos que solo consume Apple
+  //
+  // Los dos formatos no piden lo mismo, y forzarlos a un modelo único produce
+  // tarjetas rotas de un lado. Google resuelve el color con un solo hex y
+  // decide el contraste por su cuenta; Apple exige que el emisor elija también
+  // el color del texto, y si queda igual al fondo la tarjeta sale ilegible.
+  // -------------------------------------------------------------------------
+
+  /** Color del texto en Apple. Google lo decide solo a partir del fondo. */
+  foregroundColor?: string;
+  /** Color de las etiquetas ("Puntos", "Nivel") en Apple, normalmente más tenue. */
+  labelColor?: string;
+  /**
+   * Texto al lado del logo en Apple. No tiene equivalente en Google.
+   * Suele ser el nombre del comercio cuando el logo es solo un símbolo.
+   */
+  logoText?: string;
+  /**
+   * Banda superior de la tarjeta en Apple (`strip.png`), 375×123 px.
+   * En Google el equivalente aproximado es `heroImageUrl`.
+   */
+  stripImageUrl?: string;
 }
 
 /**

@@ -30,6 +30,36 @@ export async function enviarCampana(
   return { ok: true };
 }
 
+export async function guardarDiseno(
+  _prev: { error?: string; ok?: boolean } | undefined,
+  formData: FormData,
+): Promise<{ error?: string; ok?: boolean }> {
+  const token = String(formData.get("token") ?? "");
+  if (!token) return { error: "Sesión vencida. Volvé a abrir el módulo." };
+
+  const campo = (k: string) => String(formData.get(k) ?? "").trim();
+
+  const saved = await put("/embed/design", token, {
+    programName: campo("programName"),
+    logoUrl: campo("logoUrl"),
+    backgroundColor: campo("backgroundColor"),
+    balanceLabel: campo("balanceLabel"),
+    newsLabel: campo("newsLabel"),
+    foregroundColor: campo("foregroundColor"),
+    labelColor: campo("labelColor"),
+    logoText: campo("logoText"),
+    heroImageUrl: campo("heroImageUrl"),
+    stripImageUrl: campo("stripImageUrl"),
+  });
+
+  if (!saved) {
+    return { error: "No se pudo guardar. Revisá que el logo sea una URL válida." };
+  }
+
+  revalidatePath("/embed");
+  return { ok: true };
+}
+
 export async function crearBeneficio(
   _prev: { error?: string; ok?: boolean } | undefined,
   formData: FormData,

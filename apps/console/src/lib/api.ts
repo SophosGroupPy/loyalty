@@ -85,6 +85,25 @@ export interface CampaignRow {
   suppressed: number;
 }
 
+export interface CardDesignView {
+  programName: string;
+  logoUrl: string;
+  backgroundColor: string;
+  balanceLabel: string;
+  newsLabel: string;
+  foregroundColor: string;
+  labelColor: string;
+  logoText: string;
+  heroImageUrl: string;
+  stripImageUrl: string;
+}
+
+export const fetchDesign = (token: string) =>
+  get<{ design: CardDesignView; merchantName: string; unit: "points" | "stamps" }>(
+    "/embed/design",
+    token,
+  );
+
 export interface RewardRow {
   id: string;
   name: string;
