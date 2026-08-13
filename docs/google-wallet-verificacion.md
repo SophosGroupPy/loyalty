@@ -71,6 +71,29 @@ El valor correcto es **`NOTIFY_ON_UPDATE`**, el que indicaban las páginas de
 casos de uso. Ya está corregido en `enums.ts` — fue un cambio de una línea
 porque el valor estaba aislado ahí justamente previendo esto.
 
+### Los cambios de clase no llegan al instante
+
+Al renombrar la clase, la API lo aplica de inmediato pero **el pase ya instalado
+siguió mostrando el nombre viejo**, incluso reiniciando la app.
+
+Implicancia para el producto: los cambios a nivel **objeto** —el saldo, el nivel—
+se ven enseguida; los cambios a nivel **clase** —marca, nombre del programa,
+logo, colores— quedan cacheados en el dispositivo y se actualizan cuando Google
+decide. **A un comercio que cambia su logo hay que decirle que sus clientes
+actuales lo van a ver más tarde, no en el momento.**
+
+### Editar una clase obliga a mandar `UNDER_REVIEW`
+
+Cualquier `PATCH` que llegue con `reviewStatus: APPROVED` se rechaza:
+
+```
+Invalid review status "APPROVED". Use "UNDER_REVIEW" instead.
+```
+
+Es el valor que asigna Google y no se puede reenviar. Hay que mandar
+`UNDER_REVIEW` en cada edición — no degrada nada, Google vuelve a aprobar sola.
+`pnpm rename:class` ya lo hace.
+
 ### Geocercas — el pase las recibe
 
 Con la tarjeta instalada, Google Wallet ofrece *"Get notified when you're near
