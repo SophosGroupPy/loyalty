@@ -7,11 +7,14 @@
  * comercio siempre dentro del producto que hace el pedido.
  */
 
+import { randomBytes } from "node:crypto";
+
 import { sql } from "drizzle-orm";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import { rows, type Db } from "@sophos/db";
+import type { WebhookEventType } from "@sophos/loyalty-sdk";
 import { validateConfig, type ProgramConfig } from "@sophos/rules";
 
 import {
@@ -38,6 +41,7 @@ import { CAMPAIGN_BUDGET } from "./notifications/policy.js";
 import { createConsoleSender, createWalletSender } from "./notifications/senders.js";
 import type { NotificationSender } from "./notifications/dispatcher.js";
 import { createPassService, type PassService } from "./passes.js";
+import { deliverDue, enqueueWebhook, rewardsJustUnlocked } from "./webhooks.js";
 import type { CardDesign, GoogleWalletConfig } from "@sophos/passes";
 
 declare module "fastify" {
@@ -107,6 +111,41 @@ export function createServer(opts: ServerOptions): FastifyInstance {
    * no puede convertir una acumulación exitosa en un error. El desfasaje queda
    * registrado y lo levanta la reconciliación.
    */
+  /**
+   * Encola un webhook sin bloquear la respuesta ni poder romperla.
+   *
+   * Es distinto de `enqueue`, que avisa al **cliente**: esto le avisa al
+   * **producto**, para que su POS sepa qué mostrarle al cajero. Igual que con
+   * los pases, que ElMenu esté caído no puede convertir una venta registrada en
+   * un error.
+   */
+  function emitWebhook(
+    merchantId: string,
+    type: WebhookEventType,
+    data: Record<string, unknown>,
+    productId?: string,
+  ): void {
+    void enqueueWebhook(db, {
+      productId: productId ?? "",
+      merchantId,
+      type,
+      data,
+    }).catch((error) => {
+      app.log.error({ err: error, type, merchantId }, "no se pudo encolar el webhook");
+    });
+  }
+
+  /** Datos mínimos de una tarjeta para armar el cuerpo de un webhook. */
+  async function membershipBrief(membershipId: string) {
+    const found = await rows<{ serial_number: string; phone: string | null }>(
+      db.drizzle,
+      sql`SELECT m.serial_number, p.phone_e164 AS phone
+          FROM membership m JOIN person p ON p.id = m.person_id
+          WHERE m.id = ${membershipId}`,
+    );
+    return found[0] ?? null;
+  }
+
   function syncPassInBackground(membershipId: string): void {
     void passes.syncGooglePass(membershipId).catch((error) => {
       app.log.error({ err: error, membershipId }, "falló la sincronización del pase");
@@ -521,6 +560,50 @@ export function createServer(opts: ServerOptions): FastifyInstance {
           kind: "reward_unlocked",
         }).catch(() => {});
       }
+
+      // Y el aviso al producto, que es el que hace que el cajero vea "este
+      // cliente tiene un café gratis" cuando lo busca.
+      const productId = request.claims!.productId;
+      void (async () => {
+        const brief = await membershipBrief(membershipId);
+        if (!brief) return;
+
+        emitWebhook(
+          merchant.id,
+          "membership.balance_changed",
+          {
+            membershipId,
+            serialNumber: brief.serial_number,
+            balance: result.balance,
+            delta: result.amount,
+            unit: result.unit,
+          },
+          productId,
+        );
+
+        const justUnlocked = await rewardsJustUnlocked(
+          db,
+          merchant.id,
+          result.balance - result.amount,
+          result.balance,
+        );
+        if (justUnlocked.length > 0) {
+          emitWebhook(
+            merchant.id,
+            "reward.available",
+            {
+              membershipId,
+              serialNumber: brief.serial_number,
+              phone: brief.phone,
+              balance: result.balance,
+              rewards: justUnlocked,
+            },
+            productId,
+          );
+        }
+      })().catch((error) => {
+        app.log.error({ err: error, membershipId }, "falló la emisión de webhooks");
+      });
     }
 
     // Un reintento devuelve 200 con el resultado original; el primer envío, 201.
@@ -569,7 +652,92 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     }
 
     syncPassInBackground(membershipId);
+
+    void (async () => {
+      const [brief, reward] = await Promise.all([
+        membershipBrief(membershipId),
+        rows<{ name: string; cost: number }>(
+          db.drizzle,
+          sql`SELECT name, cost FROM reward WHERE id = ${parsed.data.rewardId}`,
+        ),
+      ]);
+
+      emitWebhook(
+        merchant.id,
+        "redemption.completed",
+        {
+          membershipId,
+          redemptionId: result.redemptionId,
+          rewardId: parsed.data.rewardId,
+          rewardName: reward[0]?.name ?? null,
+          cost: reward[0]?.cost ?? null,
+          balance: result.balance,
+          redeemedBy: parsed.data.redeemedBy,
+          serialNumber: brief?.serial_number ?? null,
+        },
+        request.claims!.productId,
+      );
+    })().catch(() => {});
+
     return reply.code(201).send(result);
+  });
+
+  // --------------------------------------------------------------------------
+  // Webhooks salientes
+  // --------------------------------------------------------------------------
+
+  const webhookBody = z.object({
+    url: z.string().url(),
+    /**
+     * Secreto con el que se firma cada entrega. Si no lo mandás, se genera uno
+     * y se devuelve **una sola vez** — no se puede volver a consultar.
+     */
+    secret: z.string().min(16).optional(),
+    /** Vacío significa todos los eventos. */
+    eventTypes: z.array(z.string()).default([]),
+  });
+
+  app.post("/v1/webhook-endpoints", async (request, reply) => {
+    const parsed = webhookBody.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    // Exigir HTTPS no es ceremonia: el cuerpo lleva teléfonos y saldos de
+    // clientes, y la firma prueba el origen pero no cifra nada.
+    if (!parsed.data.url.startsWith("https://") && !parsed.data.url.includes("localhost")) {
+      return reply.code(400).send({
+        error: "insecure_url",
+        message: "La URL del webhook tiene que ser HTTPS.",
+      });
+    }
+
+    const secret = parsed.data.secret ?? randomBytes(32).toString("base64url");
+
+    // Se arma el literal de array de Postgres a mano: un array JS vacío se
+    // serializa como `()`, que no es SQL válido, y el caso "sin filtro de
+    // eventos" es justamente el más común.
+    const eventTypes = `{${parsed.data.eventTypes.join(",")}}`;
+
+    const created = await rows<{ id: string }>(
+      db.drizzle,
+      sql`INSERT INTO webhook_endpoint (product_id, url, secret, event_types)
+          VALUES (${request.claims!.productId}, ${parsed.data.url}, ${secret},
+                  ${eventTypes}::text[])
+          ON CONFLICT (product_id, url) DO UPDATE
+            SET secret = EXCLUDED.secret, event_types = EXCLUDED.event_types, active = true
+          RETURNING id`,
+    );
+
+    return reply.code(201).send({
+      id: created[0]?.id,
+      url: parsed.data.url,
+      // Se devuelve una sola vez. Guardalo: no hay forma de recuperarlo después.
+      secret,
+    });
+  });
+
+  /** Corre la cola de entrega. Lo llama un worker o un cron. */
+  app.post("/v1/webhooks/deliver", async (_request, reply) => {
+    return reply.send(await deliverDue(db, { ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}) }));
   });
 
   // --------------------------------------------------------------------------

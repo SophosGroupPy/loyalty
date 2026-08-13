@@ -57,6 +57,9 @@ importers:
       '@sophos/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@sophos/loyalty-sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
       '@sophos/passes':
         specifier: workspace:*
         version: link:../../packages/passes
@@ -133,6 +136,8 @@ importers:
         version: 6.2.8
 
   packages/rules: {}
+
+  packages/sdk: {}
 
 packages:
 

@@ -66,6 +66,8 @@ describe("migraciones", () => {
       "program",
       "redemption",
       "reward",
+      "webhook_delivery",
+      "webhook_endpoint",
     ]);
   });
 

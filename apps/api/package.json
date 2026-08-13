@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@sophos/db": "workspace:*",
+    "@sophos/loyalty-sdk": "workspace:*",
     "@sophos/passes": "workspace:*",
     "@sophos/rules": "workspace:*",
     "drizzle-orm": "^0.45.2",
