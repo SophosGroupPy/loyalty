@@ -53,16 +53,21 @@ async function main(): Promise<void> {
   const objectId = objectIdFor(config.issuerId, serial);
   const client = createGoogleWalletClient(config);
 
+  // Con `--notify` se pide además la notificación al cliente. En el uso normal
+  // esa decisión es del despachador, que es el único que ve el cupo diario;
+  // acá el flag existe para poder dirimir el valor de `notifyPreference`, que
+  // la documentación de Google define de dos formas distintas.
+  const notify = process.argv.includes("--notify");
+
   await client.syncBalance({
     objectId,
     balance,
     balanceLabel: "Puntos",
-    // Sin notificar: acá solo se verifica que el dato viaje. El aviso al cliente
-    // lo decide el despachador, que es el único que ve el cupo diario.
-    notify: false,
+    notify,
   });
 
   console.log(`\n  \x1b[32m✓\x1b[0m ${objectId} → ${balance} puntos`);
+  console.log(`    notificación: ${notify ? "solicitada" : "no"}`);
   console.log("    Recargá la tarjeta en la wallet: el saldo tiene que cambiar");
   console.log("    sin reinstalar el pase.\n");
 }

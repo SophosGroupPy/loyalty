@@ -15,7 +15,6 @@ export type { SaveLinkInput } from "./google/jwt.js";
 
 export {
   NOTIFICATIONS_PER_PASS_PER_DAY,
-  NOTIFY_PREFERENCE_FALLBACK,
   NOTIFY_PREFERENCE_ON_UPDATE,
   SAVE_LINK_BASE,
 } from "./google/enums.js";

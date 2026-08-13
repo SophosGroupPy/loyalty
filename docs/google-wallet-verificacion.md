@@ -46,11 +46,36 @@ pnpm demo                      # flujo completo, termina en el save link
 pnpm patch:balance <serial> N  # empuja un saldo a un pase ya emitido
 ```
 
+### `notifyPreference` — resuelto
+
+**La referencia REST de Google estaba equivocada.** Decía *"When set to NOTIFY,
+we will attempt to trigger a field update notification"*, pero la API rechaza ese
+valor:
+
+```
+Invalid value at 'resource.notify_preference'
+(type.googleapis.com/google.walletobjects.v1.NotificationSettingsForUpdates), "NOTIFY"
+```
+
+El valor correcto es **`NOTIFY_ON_UPDATE`**, el que indicaban las páginas de
+casos de uso. Ya está corregido en `enums.ts` — fue un cambio de una línea
+porque el valor estaba aislado ahí justamente previendo esto.
+
+### Geocercas — el pase las recibe
+
+Con la tarjeta instalada, Google Wallet ofrece *"Get notified when you're near
+[TEST ONLY] Don Julio"*. O sea que **`merchantLocations` llega bien** y el
+sistema operativo la reconoce, pese al cambio anunciado en I/O 2026.
+
 ## Lo que sigue sin verificar
 
-- ⬜ **`notifyPreference`** — el valor ambiguo de la documentación. Requiere un
-  Android real o el emulador con la app de Wallet instalada.
-- ⬜ **Geocercas** — requiere acercarse físicamente a un local.
+- ⬜ **Que la notificación push efectivamente llegue.** La API acepta
+  `NOTIFY_ON_UPDATE` y el saldo se actualiza, pero **no se observó la
+  notificación en el emulador**. Puede ser una limitación del emulador —la
+  entrega vía Play Services ahí es poco confiable— o cuestión de tiempo.
+  **Requiere un Android real para descartarlo.**
+- ⬜ **Que la geocerca dispare al acercarse.** El pase la tiene registrada, pero
+  probar que salta exige estar físicamente cerca del local.
 - ⬜ **El tope de 3 notificaciones cada 24 h.**
 
 > **La cuenta arranca en demo mode.** Las tarjetas solo las pueden guardar cuentas

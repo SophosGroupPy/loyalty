@@ -31,22 +31,20 @@ export const STATE_INACTIVE = "INACTIVE";
 /**
  * Pide a Google que dispare notificación al cambiar campos que notifican.
  *
- * ⚠️ **CONFLICTO EN LA DOCUMENTACIÓN — verificar antes de producción.**
- * - `rest/v1/loyaltyclass` dice: *"When set to NOTIFY, we will attempt to
- *   trigger a field update notification"*.
- * - `retail/loyalty-cards/use-cases/trigger-push-notifications` dice
- *   `notifyPreference: notifyOnUpdate`.
+ * **Verificado contra la API real el 2026-08-12.** La documentación de Google se
+ * contradecía: la referencia REST de `loyaltyclass` decía *"When set to NOTIFY,
+ * we will attempt to trigger a field update notification"*, y las páginas de
+ * casos de uso decían `notifyOnUpdate`.
  *
- * Se toma el valor de la referencia REST. Si la API lo rechaza o las
- * notificaciones no llegan, probar `NOTIFY_ON_UPDATE`.
+ * **Ganan las páginas de casos de uso.** La API rechaza `"NOTIFY"` con:
+ *
+ *     Invalid value at 'resource.notify_preference'
+ *     (…v1.NotificationSettingsForUpdates), "NOTIFY"
  *
  * Es **transient**: hay que mandarlo en cada request que deba notificar, no se
  * configura una sola vez.
  */
-export const NOTIFY_PREFERENCE_ON_UPDATE = "NOTIFY";
-
-/** Valor alternativo a probar si el de arriba no dispara notificaciones. */
-export const NOTIFY_PREFERENCE_FALLBACK = "NOTIFY_ON_UPDATE";
+export const NOTIFY_PREFERENCE_ON_UPDATE = "NOTIFY_ON_UPDATE";
 
 /**
  * Agrega el mensaje al dorso del pase Y dispara una notificación push.
