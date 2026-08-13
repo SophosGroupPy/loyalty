@@ -1,0 +1,13 @@
+# Lo que no tiene sentido subir en cada deploy.
+node_modules/
+.next/
+dist/
+.git/
+*.log
+
+# Credenciales locales. El .gitignore ya las bloquea, pero `railway up` sube el
+# directorio tal como está en disco, no lo que está commiteado.
+.env
+.env.local
+*.json.key
+*service-account*.json

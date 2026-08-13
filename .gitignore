@@ -16,3 +16,6 @@ gcp-*.json
 *.pem
 *.key
 certs/
+
+# Build de Next: no va al repo.
+apps/*/.next/

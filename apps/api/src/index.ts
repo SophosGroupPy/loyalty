@@ -30,6 +30,21 @@ function requireSigningKey(): Uint8Array {
   return new TextEncoder().encode(secret);
 }
 
+/**
+ * En producción la base tiene que ser un Postgres real.
+ *
+ * Sin esta guarda, olvidarse de adjuntar la base en Railway no rompe nada
+ * visible: el servicio arranca, acepta altas, emite tarjetas y acumula
+ * puntos — y pierde todo en el primer reinicio. Es la peor forma de fallar,
+ * porque parece que funciona.
+ */
+if (process.env.NODE_ENV === "production" && !process.env.DATABASE_URL) {
+  throw new Error(
+    "Falta DATABASE_URL en producción. Sin ella el servicio arrancaría con una " +
+      "base en memoria: aceptaría altas y perdería todo al reiniciar.",
+  );
+}
+
 const db = await createDb();
 await runMigrations(db);
 
