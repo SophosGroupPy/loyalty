@@ -16,9 +16,12 @@ import { validateConfig, type ProgramConfig } from "@sophos/rules";
 
 import {
   authenticateProduct,
+  issueEmbedToken,
   issueToken,
   resolveMerchant,
+  verifyEmbedToken,
   verifyToken,
+  type EmbedClaims,
   type ResolvedMerchant,
   type TokenClaims,
 } from "./auth.js";
@@ -40,6 +43,8 @@ import type { CardDesign, GoogleWalletConfig } from "@sophos/passes";
 declare module "fastify" {
   interface FastifyRequest {
     claims?: TokenClaims;
+    /** Sesión de consola embebida. El comercio sale de acá y de ningún otro lado. */
+    embed?: EmbedClaims;
   }
 }
 
@@ -119,6 +124,52 @@ export function createServer(opts: ServerOptions): FastifyInstance {
 
     request.claims = claims;
   });
+
+  /**
+   * Autenticación de la consola embebible.
+   *
+   * **El comercio sale del token y de ningún otro lado.** Los endpoints `/embed`
+   * ignoran por completo cualquier `merchant` que venga en el body o la query:
+   * si lo aceptaran, un comercio podría editar el request desde el navegador y
+   * leer la base de clientes de otro. El token es la única fuente.
+   */
+  app.addHook("preHandler", async (request, reply) => {
+    if (!request.url.startsWith("/embed/")) return;
+
+    const header = request.headers.authorization;
+    const token = header?.startsWith("Bearer ") ? header.slice(7) : null;
+    if (!token) {
+      return reply.code(401).send({ error: "unauthorized", message: "Falta el token." });
+    }
+
+    const embed = await verifyEmbedToken(signingKey, token);
+    if (!embed) {
+      return reply
+        .code(401)
+        .send({ error: "unauthorized", message: "Token de consola inválido o vencido." });
+    }
+
+    request.embed = embed;
+  });
+
+  /** Comercio de la sesión de consola, con sus datos de marca. */
+  async function embedMerchant(request: FastifyRequest) {
+    const embed = request.embed;
+    if (!embed) return null;
+
+    const found = await rows<{
+      id: string;
+      display_name: string;
+      slug: string;
+      design: CardDesign | null;
+      timezone: string;
+    }>(
+      db.drizzle,
+      sql`SELECT id, display_name, slug, design, timezone FROM merchant WHERE id = ${embed.merchantId}`,
+    );
+
+    return found[0] ?? null;
+  }
 
   /**
    * Resuelve el comercio del request dentro del producto autenticado.
@@ -920,6 +971,111 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       /** `true` si la persona ya existía: el alta de un toque del ecosistema. */
       personExisted: result.membership.personExisted,
       saveUrl,
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Consola embebible
+  // --------------------------------------------------------------------------
+
+  const embedTokenBody = z.object({
+    merchant: z.string().min(1),
+    /** Quién del staff abre la consola. Queda en el token para auditar. */
+    staffId: z.string().max(120).optional(),
+  });
+
+  /**
+   * El producto pide un token para embeber la consola de uno de sus comercios.
+   *
+   * Requiere el access token del producto, así que la cadena de confianza es:
+   * el producto ya autenticó a su usuario → pide este token para el comercio
+   * que ese usuario administra → lo pone en el `src` del iframe.
+   */
+  app.post("/v1/embed-tokens", async (request, reply) => {
+    const parsed = embedTokenBody.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await withMerchant(request, reply, parsed.data.merchant);
+    if (!merchant) return;
+
+    const claims = request.claims!;
+    const { token, expiresIn } = await issueEmbedToken(signingKey, {
+      merchantId: merchant.id,
+      productId: claims.productId,
+      ...(parsed.data.staffId ? { staffId: parsed.data.staffId } : {}),
+    });
+
+    return reply.send({
+      token,
+      expiresIn,
+      merchantId: merchant.id,
+      displayName: merchant.displayName,
+    });
+  });
+
+  /** Números de la portada de la consola. */
+  app.get("/embed/summary", async (request, reply) => {
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const stats = await rows<{
+      cards: number;
+      active_cards: number;
+      new_this_week: number;
+      redemptions: number;
+      outstanding: number;
+    }>(
+      db.drizzle,
+      sql`SELECT
+            count(*)::int AS cards,
+            count(*) FILTER (WHERE status = 'active')::int AS active_cards,
+            count(*) FILTER (WHERE issued_at > now() - interval '7 days')::int AS new_this_week,
+            (SELECT count(*)::int FROM redemption WHERE merchant_id = ${merchant.id}) AS redemptions,
+            -- Puntos en circulación: es el pasivo del comercio, lo que debe en
+            -- beneficios. Es el número que más le importa y el que nadie le muestra.
+            COALESCE(sum(balance), 0)::int AS outstanding
+          FROM membership WHERE merchant_id = ${merchant.id}`,
+    );
+
+    return reply.send({
+      merchant: { displayName: merchant.display_name, slug: merchant.slug },
+      ...(stats[0] ?? {
+        cards: 0,
+        active_cards: 0,
+        new_this_week: 0,
+        redemptions: 0,
+        outstanding: 0,
+      }),
+    });
+  });
+
+  /** Configuración del programa, para leer y para guardar. */
+  app.get("/embed/program", async (request, reply) => {
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const found = await rows<{ id: string; kind: string; config: ProgramConfig }>(
+      db.drizzle,
+      sql`SELECT id, kind, config FROM program
+          WHERE merchant_id = ${merchant.id} AND status = 'active'`,
+    );
+
+    const program = found[0];
+    if (!program) return reply.code(404).send({ error: "no_program" });
+
+    return reply.send({ kind: program.kind, config: program.config });
+  });
+
+  /** Datos para imprimir el QR de alta. */
+  app.get("/embed/enrollment-link", async (request, reply) => {
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const base = process.env.JOIN_BASE_URL ?? "https://tarjeta.sophosgroup.com.py";
+    return reply.send({
+      url: `${base}/${merchant.slug}`,
+      slug: merchant.slug,
+      displayName: merchant.display_name,
     });
   });
 

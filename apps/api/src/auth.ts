@@ -101,6 +101,75 @@ export async function authenticateProduct(
   return { productId: product.id, productSlug: product.slug };
 }
 
+// ---------------------------------------------------------------------------
+// Tokens de la consola embebible
+// ---------------------------------------------------------------------------
+
+/**
+ * Issuer propio, distinto del de los access token de producto.
+ *
+ * No es cosmético: `jwtVerify` rechaza el issuer que no coincide, así que un
+ * access token de producto **no puede** usarse como token de consola ni al
+ * revés. Separarlos con un claim `scope` dependería de que alguien se acuerde
+ * de chequearlo en cada ruta; separarlos por issuer lo hace la librería.
+ */
+const EMBED_ISSUER = "sophos-loyalty/embed";
+
+export interface EmbedClaims {
+  /** El comercio al que queda atada la sesión. No es negociable por request. */
+  merchantId: string;
+  productId: string;
+  /** Quién del staff abrió la consola, para el registro de auditoría. */
+  staffId?: string;
+}
+
+/**
+ * Emite un token para embeber la consola.
+ *
+ * Vive una hora: es una sesión de trabajo dentro de un producto donde el usuario
+ * ya se autenticó. Ojo con el compromiso — el token viaja en la URL del iframe,
+ * así que queda en el historial del navegador y puede terminar en logs. Acortar
+ * la vida útil exige que el producto padre renueve por `postMessage`, que es el
+ * paso siguiente natural de esta pieza.
+ */
+export async function issueEmbedToken(
+  signingKey: Uint8Array,
+  claims: EmbedClaims,
+  ttlSeconds = 3600,
+): Promise<{ token: string; expiresIn: number }> {
+  const token = await new SignJWT({
+    productId: claims.productId,
+    ...(claims.staffId ? { staffId: claims.staffId } : {}),
+  })
+    .setProtectedHeader({ alg: "HS256" })
+    .setSubject(claims.merchantId)
+    .setIssuer(EMBED_ISSUER)
+    .setIssuedAt()
+    .setExpirationTime(`${ttlSeconds}s`)
+    .sign(signingKey);
+
+  return { token, expiresIn: ttlSeconds };
+}
+
+/** Valida un token de consola. Devuelve `null` si no sirve. */
+export async function verifyEmbedToken(
+  signingKey: Uint8Array,
+  token: string,
+): Promise<EmbedClaims | null> {
+  try {
+    const { payload } = await jwtVerify(token, signingKey, { issuer: EMBED_ISSUER });
+    if (!payload.sub || typeof payload.productId !== "string") return null;
+
+    return {
+      merchantId: payload.sub,
+      productId: payload.productId,
+      ...(typeof payload.staffId === "string" ? { staffId: payload.staffId } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export interface ResolvedMerchant {
   id: string;
   externalId: string;
