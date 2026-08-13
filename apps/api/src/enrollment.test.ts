@@ -297,6 +297,47 @@ describe("límites de envío", () => {
   });
 });
 
+describe("registro de la redacción consentida", () => {
+  it("guarda los ids que la landing dice haber mostrado", async () => {
+    await start();
+    await verify({ consentIds: ["programa/v1", "identidad/v2"] });
+
+    const person = await rows<{ consent_version: string }>(
+      db.drizzle,
+      sql`SELECT consent_version FROM person WHERE phone_e164 = '+595993427654'`,
+    );
+    expect(person[0]?.consent_version).toBe("programa/v1+identidad/v2");
+  });
+
+  it("rechaza una redacción que este servidor no conoce", async () => {
+    // El caso que importa: alguien edita el texto de la casilla y sube la
+    // versión sin avisar acá. Tiene que fallar de entrada — un alta guardada
+    // bajo una etiqueta cuyo texto nadie puede reconstruir no sirve como prueba
+    // de consentimiento, y el problema recién se vería en un reclamo.
+    await start();
+    const res = await verify({ consentIds: ["programa/v1", "identidad/v9"] });
+    expect(res.statusCode).toBe(400);
+
+    const people = await rows<{ count: string }>(
+      db.drizzle,
+      sql`SELECT count(*)::text AS count FROM person`,
+    );
+    expect(people[0]?.count).toBe("0");
+  });
+
+  it("sigue aceptando un cliente que todavía no manda los ids", async () => {
+    await start();
+    const res = await verify({ acceptsSharedIdentity: false });
+    expect(res.statusCode).toBe(201);
+
+    const person = await rows<{ consent_version: string }>(
+      db.drizzle,
+      sql`SELECT consent_version FROM person WHERE phone_e164 = '+595993427654'`,
+    );
+    expect(person[0]?.consent_version).toBe("programa/v1");
+  });
+});
+
 describe("consentimiento e identidad compartida", () => {
   it("no deja darse de alta sin aceptar el programa", async () => {
     await start();

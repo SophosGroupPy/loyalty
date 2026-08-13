@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 
+import { IDENTIDAD, PROGRAMA } from "../../consent";
+
 /**
  * Alta en tres pasos: celular → código → tarjeta.
  *
@@ -84,6 +86,10 @@ export function EnrollForm({ slug, merchantName, accent }: Props) {
         ...(name.trim() ? { displayName: name.trim() } : {}),
         acceptsProgram,
         acceptsSharedIdentity,
+        // Se manda el id de la redacción que esta pantalla acaba de mostrar, no
+        // uno que el servidor asuma: lo que queda guardado tiene que ser lo que
+        // la persona leyó, incluso si algún día las dos partes se desfasan.
+        consentIds: [PROGRAMA.id, ...(acceptsSharedIdentity ? [IDENTIDAD.id] : [])],
       }),
     });
 
@@ -162,10 +168,7 @@ export function EnrollForm({ slug, merchantName, accent }: Props) {
             checked={acceptsProgram}
             onChange={(e) => setAcceptsProgram(e.target.checked)}
           />
-          <span>
-            Acepto participar del programa de fidelidad de {merchantName} y que
-            guarde mis datos de contacto y consumo.
-          </span>
+          <span>{PROGRAMA.texto.replace("%s", merchantName)}</span>
         </label>
 
         <label className="consent">
@@ -175,8 +178,7 @@ export function EnrollForm({ slug, merchantName, accent }: Props) {
             onChange={(e) => setAcceptsSharedIdentity(e.target.checked)}
           />
           <span>
-            Acepto que Sophos Group conserve mi celular verificado para no tener
-            que validarlo de nuevo en otros comercios. <em>Opcional.</em>
+            {IDENTIDAD.texto} <em>Opcional.</em>
           </span>
         </label>
 

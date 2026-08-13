@@ -126,6 +126,20 @@ const EVENT_TYPES = [
   "invoice.issued",
 ] as const;
 
+/**
+ * Redacciones de consentimiento que este servidor sabe recibir.
+ *
+ * El texto de cada una vive en la landing de alta (`apps/join/src/consent.ts`),
+ * que es donde se muestra; acá solo se valida que el id sea uno conocido. Las
+ * versiones retiradas se conservan en la lista porque hay personas dadas de alta
+ * bajo ellas y el registro tiene que seguir siendo legible.
+ */
+const CONSENT_IDS = [
+  "programa/v1",
+  "identidad/v1",
+  "identidad/v2",
+] as const;
+
 export function createServer(opts: ServerOptions): FastifyInstance {
   const { db, signingKey } = opts;
   const app = Fastify({ logger: opts.logger ?? false });
@@ -1340,6 +1354,15 @@ export function createServer(opts: ServerOptions): FastifyInstance {
      * puede aceptar una y no la otra.
      */
     acceptsSharedIdentity: z.boolean().default(false),
+    /**
+     * Ids de las redacciones que la landing efectivamente mostró.
+     *
+     * Se validan contra las conocidas en vez de derivarlas acá: si la landing
+     * cambia un texto y sube su versión, este endpoint la rechaza hasta que se
+     * agregue a la lista. Es preferible un alta que falla y se ve, a un alta que
+     * queda guardada bajo una etiqueta cuyo texto nadie puede reconstruir.
+     */
+    consentIds: z.array(z.enum(CONSENT_IDS)).min(1).optional(),
   });
 
   app.post("/public/enrollment/verify", async (request, reply) => {
@@ -1358,10 +1381,15 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       code: parsed.data.code,
       ...(parsed.data.displayName ? { displayName: parsed.data.displayName } : {}),
       // Se registra qué consintió exactamente, no un "sí" genérico: son dos
-      // bases legales distintas bajo la Ley 7593/2025.
-      consentVersion: parsed.data.acceptsSharedIdentity
-        ? "programa+identidad/v1"
-        : "programa/v1",
+      // bases legales distintas bajo la Ley 7593/2025. Se guardan los ids que la
+      // landing dice haber mostrado; el fallback cubre a los clientes viejos que
+      // todavía no los mandan.
+      consentVersion: (
+        parsed.data.consentIds ?? [
+          "programa/v1",
+          ...(parsed.data.acceptsSharedIdentity ? ["identidad/v1"] : []),
+        ]
+      ).join("+"),
     });
 
     if (result.status !== "verified") {
