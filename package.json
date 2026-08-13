@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --build --force",
-    "check:google": "tsx scripts/check-google.ts"
+    "check:google": "tsx scripts/check-google.ts",
+    "patch:balance": "tsx scripts/patch-balance.ts"
   },
   "devDependencies": {
     "@sophos/db": "workspace:*",

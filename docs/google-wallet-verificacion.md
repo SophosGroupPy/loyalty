@@ -16,8 +16,42 @@ Issuer. Todos los valores en duda viven en un solo archivo:
 | Cuenta en Google Pay & Wallet Console | ✅ creada como **Sophos Group** |
 | Merchant ID (Google Pay) | `BCR2DN6D3KFLZNRV` — **no** es el Issuer, no sirve acá |
 | **Issuer ID (Google Wallet)** | ✅ **`3388000000023171859`** |
-| Service account de GCP | ⬜ pendiente |
+| Service account de GCP | ✅ `loyalty-issuer@loyalty-sophos.iam.gserviceaccount.com` |
+| Invitada en Wallet Console | ✅ rol **Developer** |
 | Publishing access | ⬜ **pendiente, y es el que tarda** |
+
+## Lo ya verificado contra la API real (2026-08-12)
+
+Emisión completa de una tarjeta de prueba, guardada en la cuenta
+`sophosgroup.py@gmail.com` en demo mode:
+
+- ✅ **La marca visible es la del comercio.** La tarjeta dice "Don Julio", no
+  Sophos. La atribución del mandato aparece en el dorso: *"Emitido por Sophos
+  Group EAS en nombre de Don Julio SA."*
+- ✅ **El saldo se actualiza sin reinstalar el pase.** Se guardó con 8 puntos, se
+  hizo `PATCH` a 777 y la tarjeta lo reflejó. Es el criterio que definía si toda
+  la capa servía: sin esto, cada acumulación exigiría reemitir.
+- ✅ **Las clases se aprueban solas.** La primera volvió con `reviewStatus:
+  approved` sin intervención, pese a haberse enviado como `UNDER_REVIEW`.
+  **Dar de alta un comercio nuevo es instantáneo**, no hay cola de revisión por
+  comercio. Conviene reconfirmarlo tras el publishing access, por si el
+  comportamiento cambia fuera de demo mode.
+- ✅ El QR lleva el serial y coincide con el Member ID.
+
+Herramientas que quedaron para repetir esto:
+
+```bash
+pnpm check:google              # diagnostica credenciales y lista clases
+pnpm demo                      # flujo completo, termina en el save link
+pnpm patch:balance <serial> N  # empuja un saldo a un pase ya emitido
+```
+
+## Lo que sigue sin verificar
+
+- ⬜ **`notifyPreference`** — el valor ambiguo de la documentación. Requiere un
+  Android real o el emulador con la app de Wallet instalada.
+- ⬜ **Geocercas** — requiere acercarse físicamente a un local.
+- ⬜ **El tope de 3 notificaciones cada 24 h.**
 
 > **La cuenta arranca en demo mode.** Las tarjetas solo las pueden guardar cuentas
 > de Google que estén en la lista de prueba. Para clientes reales hay que pedir
