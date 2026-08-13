@@ -58,6 +58,15 @@ export interface ServerOptions {
   fetchImpl?: typeof fetch;
   /** Permite sustituir el servicio completo en los tests. */
   passService?: PassService;
+  /**
+   * Reloj del servidor. Inyectable para que los tests controlen cuándo se
+   * agenda un aviso.
+   *
+   * Sin esto, cualquier test que encole por HTTP y despache con un `now` fijo
+   * depende de la hora real de la máquina: funciona hasta que el reloj cruza la
+   * fecha del test y falla sin que nadie haya tocado el código.
+   */
+  now?: () => Date;
   /** Canal de envío. Por defecto: wallet si hay credenciales, consola si no. */
   notificationSender?: NotificationSender;
   /** Envío del OTP. Por defecto imprime por consola, para desarrollo. */
@@ -77,6 +86,8 @@ export function createServer(opts: ServerOptions): FastifyInstance {
 
   const passes =
     opts.passService ?? createPassService(db, opts.googleWallet, opts.fetchImpl);
+
+  const clock = opts.now ?? (() => new Date());
 
   // Sin credenciales de wallet el despachador sigue funcionando entero contra la
   // consola: se puede verificar cupo, prioridad y agrupamiento sin depender de
@@ -760,6 +771,7 @@ export function createServer(opts: ServerOptions): FastifyInstance {
         campaignId,
         header: parsed.data.header,
         body: parsed.data.body,
+        now: clock(),
       });
     }
 

@@ -34,6 +34,11 @@ const EVENTS: Record<string, string> = {
 
 const guaranies = new Intl.NumberFormat("es-PY");
 
+/** "1 puntos" delata que el texto lo armó una máquina y no alguien que lo leyó. */
+function unidad(n: number, plural: string): string {
+  return n === 1 ? plural.replace(/s$/, "") : plural;
+}
+
 /**
  * Traduce una regla del motor a castellano.
  *
@@ -47,11 +52,14 @@ function describeRule(rule: NonNullable<ProgramView["config"]["earn"]>[number], 
 
   if (rule.rate) {
     parts.push(
-      `${rule.rate.points} ${unit} por cada ${guaranies.format(rule.rate.per)} Gs`,
+      `${rule.rate.points} ${unidad(rule.rate.points, unit)} por cada ` +
+        `${guaranies.format(rule.rate.per)} Gs`,
     );
   }
   const fixed = rule.points ?? rule.stamps;
-  if (fixed) parts.push(`${fixed} ${unit} fijos`);
+  if (fixed) {
+    parts.push(`${fixed} ${unidad(fixed, unit)} ${fixed === 1 ? "fijo" : "fijos"}`);
+  }
   if (rule.multiplier) parts.push(`multiplica por ${rule.multiplier}`);
 
   const conditions: string[] = [];

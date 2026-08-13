@@ -57,7 +57,10 @@ beforeEach(async () => {
         VALUES ('elmenu', 'ElMenu', 'cid', ${await hashSecret("sec")})`,
   );
 
-  app = createServer({ db, signingKey: SIGNING_KEY });
+  // El reloj se fija al mismo instante con el que se despacha. Sin esto, lo que
+  // se encola por HTTP queda agendado con la hora real de la máquina y el test
+  // pasa o falla según el día en que se corra.
+  app = createServer({ db, signingKey: SIGNING_KEY, now: () => NOCHE });
   await app.ready();
 
   const res = await app.inject({

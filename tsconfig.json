@@ -22,5 +22,5 @@
   "include": ["apps/*/src/**/*.ts", "packages/*/src/**/*.ts", "scripts/*.ts", "*.config.ts"],
   // La app de Next tiene su propio tsconfig con los tipos del framework
   // (`next.fetch`, JSX, el plugin). Chequearla desde acá produce errores falsos.
-  "exclude": ["node_modules", "apps/join"]
+  "exclude": ["node_modules", "apps/join", "apps/console"]
 }
