@@ -24,6 +24,15 @@ importers:
       '@electric-sql/pglite':
         specifier: ^0.5.4
         version: 0.5.4
+      '@sophos/db':
+        specifier: workspace:*
+        version: link:packages/db
+      '@sophos/passes':
+        specifier: workspace:*
+        version: link:packages/passes
+      '@sophos/rules':
+        specifier: workspace:*
+        version: link:packages/rules
       '@types/node':
         specifier: ^22.10.2
         version: 22.20.1

@@ -9,11 +9,15 @@
   },
   "scripts": {
     "dev": "pnpm --filter @sophos/api dev",
+    "demo": "tsx scripts/demo.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --build --force"
   },
   "devDependencies": {
+    "@sophos/db": "workspace:*",
+    "@sophos/passes": "workspace:*",
+    "@sophos/rules": "workspace:*",
     "@electric-sql/pglite": "^0.5.4",
     "@types/node": "^22.10.2",
     "@types/pg": "^8.21.0",

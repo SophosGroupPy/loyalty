@@ -101,6 +101,58 @@ a la vez.
 **Cómo verificar:** disparar 5 acumulaciones sobre la misma tarjeta en un día y
 contar cuántas notificaciones llegan.
 
+## Cómo probar sin un Android a mano
+
+**Google Wallet no tiene app en iOS.** En un iPhone solo entran pases `.pkpass`,
+o sea Apple Wallet, que está bloqueado por el enrollment. Así que un iPhone no
+sirve para probar nada de esto.
+
+Hay tres caminos, en orden de conveniencia:
+
+### 1. Navegador de escritorio — cubre casi todo, sin instalar nada
+
+Abrí el `saveUrl` en Chrome logueado con una cuenta de prueba. Google guarda el
+pase en esa cuenta. Verifica lo que más riesgo tiene:
+
+- Que el JWT esté bien firmado y Google lo acepte
+- Que la clase exista y el objeto sea válido
+- Que la tarjeta muestre **el comercio** y no Sophos
+- Que el saldo, el QR y la atribución del dorso salgan bien
+
+### 2. Emulador de Android — para las notificaciones
+
+Ya está instalado en la Mac del equipo:
+
+```bash
+export JAVA_HOME="/opt/homebrew/opt/openjdk"
+export ANDROID_HOME="/opt/homebrew/share/android-commandlinetools"
+export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$JAVA_HOME/bin:$PATH"
+emulator -avd wallet-test
+```
+
+Hace falta una imagen **con Play Store** (`google_apis_playstore`) para poder
+instalar Google Wallet. **Puede que Wallet se niegue a correr en un emulador**:
+verifica integridad del dispositivo, y aunque para pases suele ser más permisivo
+que para tap-to-pay, no está garantizado.
+
+### 3. Un Android real — para la geocerca
+
+Es el único camino para verificar que la tarjeta aparezca en la pantalla
+bloqueada al acercarse al local. No hay forma de simularlo con fidelidad.
+
+> **Ojo con esto:** ni Diego ni Federico usan Android, así que el equipo no va a
+> poder dogfoodear su propio producto hasta la fase 4. Es fácil descuidar lo que
+> no usás todos los días — vale la pena agendar pruebas explícitas en vez de
+> confiar en el uso cotidiano.
+
+## Un pendiente nuevo: geocercas
+
+En Google I/O 2026 se anunció *"removal of geofence location caps via Google
+Maps"*. El manejo de `merchantLocations` puede haber cambiado respecto de lo que
+está implementado. **Revisar antes de apoyarse en las geocercas**, que según el
+diseño son el canal de notificación más barato del sistema porque no consumen
+cupo diario.
+
 ## Prueba de humo completa
 
 ```bash
