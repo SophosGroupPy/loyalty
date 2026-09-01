@@ -52,6 +52,7 @@ describe("migraciones", () => {
     );
 
     expect(rows.map((r) => r.table_name)).toEqual([
+      "apple_device_registration",
       "campaign",
       "event",
       "ledger_entry",

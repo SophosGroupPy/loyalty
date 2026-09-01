@@ -14,6 +14,13 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { z } from "zod";
 
 import { rows, type Db } from "@sophos/db";
+
+import {
+  passesUpdatedSince,
+  registerDevice,
+  unregisterDevice,
+  verifyPassAuth,
+} from "./apple.js";
 import type { WebhookEventType } from "@sophos/loyalty-sdk";
 import { validateConfig, type ProgramConfig } from "@sophos/rules";
 
@@ -2146,6 +2153,110 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     });
     return membership?.id ?? null;
   }
+
+  // -------------------------------------------------------------------------
+  // Web service de Apple Wallet
+  //
+  // Las rutas las fija Apple: el pase lleva `webServiceURL` y el dispositivo le
+  // agrega `/v1/devices/...` por su cuenta. Van fuera de `/v1/` porque ese
+  // prefijo exige token de producto y acá quien llama es un iPhone, que se
+  // autentica con el `authenticationToken` del propio pase.
+  //
+  // Apple distingue los casos por código de respuesta, no por cuerpo. Devolver
+  // 200 donde corresponde 201, o 200 con lista vacía donde corresponde 204,
+  // hace que el dispositivo se comporte mal sin que nadie vea un error.
+  // -------------------------------------------------------------------------
+
+  interface DeviceParams {
+    deviceLibraryIdentifier: string;
+    passTypeIdentifier: string;
+    serialNumber: string;
+  }
+
+  app.post<{ Params: DeviceParams; Body: { pushToken?: string } }>(
+    "/apple/v1/devices/:deviceLibraryIdentifier/registrations/:passTypeIdentifier/:serialNumber",
+    async (request, reply) => {
+      const { serialNumber } = request.params;
+      if (!verifyPassAuth(request.headers.authorization, serialNumber, signingKey)) {
+        return reply.code(401).send();
+      }
+
+      const pushToken = request.body?.pushToken;
+      if (!pushToken) return reply.code(400).send();
+
+      const result = await registerDevice(db, { ...request.params, pushToken });
+      if (result === "unknown_pass") return reply.code(404).send();
+
+      // 201 la primera vez, 200 si solo cambió el push token. Apple usa esa
+      // diferencia para decidir si tiene que volver a pedir el pase.
+      return reply.code(result === "created" ? 201 : 200).send();
+    },
+  );
+
+  app.delete<{ Params: DeviceParams }>(
+    "/apple/v1/devices/:deviceLibraryIdentifier/registrations/:passTypeIdentifier/:serialNumber",
+    async (request, reply) => {
+      if (!verifyPassAuth(request.headers.authorization, request.params.serialNumber, signingKey)) {
+        return reply.code(401).send();
+      }
+
+      await unregisterDevice(db, request.params);
+      // 200 aunque no estuviera: el cliente borró la tarjeta y el resultado
+      // deseado ya se cumplió. Un 404 haría que el dispositivo reintente para
+      // siempre algo que no tiene arreglo.
+      return reply.code(200).send();
+    },
+  );
+
+  app.get<{
+    Params: { deviceLibraryIdentifier: string; passTypeIdentifier: string };
+    Querystring: { passesUpdatedSince?: string };
+  }>(
+    "/apple/v1/devices/:deviceLibraryIdentifier/registrations/:passTypeIdentifier",
+    async (request, reply) => {
+      // Este endpoint no lleva autenticación de pase: el dispositivo pregunta
+      // por varios pases a la vez y no hay un serial contra el cual validar. Lo
+      // que protege es que el `deviceLibraryIdentifier` es opaco y solo lo
+      // conoce quien registró, y que la respuesta son seriales que ese
+      // dispositivo ya tiene.
+      const result = await passesUpdatedSince(
+        db,
+        request.params.deviceLibraryIdentifier,
+        request.params.passTypeIdentifier,
+        request.query.passesUpdatedSince,
+      );
+
+      // 204 sin cuerpo cuando no hay nada nuevo. Con 200 y lista vacía el
+      // dispositivo vuelve a pedir todos los pases.
+      if (result.serialNumbers.length === 0) return reply.code(204).send();
+
+      return reply.send(result);
+    },
+  );
+
+  app.get<{ Params: { passTypeIdentifier: string; serialNumber: string } }>(
+    "/apple/v1/passes/:passTypeIdentifier/:serialNumber",
+    async (request, reply) => {
+      if (!verifyPassAuth(request.headers.authorization, request.params.serialNumber, signingKey)) {
+        return reply.code(401).send();
+      }
+
+      // Falta el material de firma por comercio: sin el certificado del Pass
+      // Type ID no se puede emitir un `.pkpass` que iOS acepte. Se responde
+      // explícito en vez de devolver un archivo inválido, que el teléfono
+      // rechazaría sin decir por qué.
+      return reply.code(503).send({ error: "apple_signing_not_configured" });
+    },
+  );
+
+  app.post("/apple/v1/log", async (request, reply) => {
+    // Apple manda acá los errores del dispositivo, y son la única pista cuando
+    // un pase no se agrega o no se actualiza. Se registran con nivel warn: no
+    // son errores nuestros, pero cuando aparecen, importan.
+    const body = request.body as { logs?: unknown[] } | undefined;
+    for (const line of body?.logs ?? []) app.log.warn({ apple: line }, "apple wallet");
+    return reply.code(200).send();
+  });
 
   return app;
 }

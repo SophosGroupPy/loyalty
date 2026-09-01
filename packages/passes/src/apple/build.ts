@@ -122,7 +122,11 @@ export function buildStoreCard(input: BuildPassInput): ApplePass {
         messageEncoding: "iso-8859-1",
       },
     ],
-    webServiceURL: `${config.webServiceURL.replace(/\/+$/, "")}/v1/apple`,
+    // Apple le agrega `/v1/devices/...` a esta base por su cuenta, así que acá
+    // va solo el prefijo. Si se escribiera `/v1/apple`, el teléfono terminaría
+    // pidiendo `/v1/apple/v1/devices/...`. Y queda fuera de `/v1/` a propósito:
+    // ese prefijo exige token de producto, y quien llama es un iPhone.
+    webServiceURL: `${config.webServiceURL.replace(/\/+$/, "")}/apple`,
     authenticationToken: input.authenticationToken,
     storeCard: {
       primaryFields: [

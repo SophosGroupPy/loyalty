@@ -63,7 +63,28 @@ export const passInstance = pgTable("pass_instance", {
   lastSyncedBalance: integer("last_synced_balance"),
   lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
   lastError: text("last_error"),
+  contentUpdatedAt: timestamp("content_updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Dispositivos Apple registrados contra un pase.
+ *
+ * Ver `migrations/0007_apple.sql`: Apple no deja empujar contenido a un pase,
+ * así que el teléfono se registra y después se le manda un push vacío para que
+ * venga a buscar la versión nueva.
+ */
+export const appleDeviceRegistration = pgTable("apple_device_registration", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  deviceLibraryIdentifier: text("device_library_identifier").notNull(),
+  passTypeIdentifier: text("pass_type_identifier").notNull(),
+  serialNumber: text("serial_number").notNull(),
+  pushToken: text("push_token").notNull(),
+  membershipId: uuid("membership_id").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const program = pgTable("program", {
