@@ -15,6 +15,7 @@ import { z } from "zod";
 
 import { rows, type Db } from "@sophos/db";
 
+import { runExpiry } from "./expiry.js";
 import {
   passesUpdatedSince,
   registerDevice,
@@ -1220,6 +1221,17 @@ export function createServer(opts: ServerOptions): FastifyInstance {
   /** Corre el despachador de notificaciones de todo el ecosistema. */
   app.post("/admin/notifications/dispatch", async (_request, reply) => {
     return reply.send(await dispatchDue(db, sender));
+  });
+
+  /**
+   * Aplica el vencimiento de puntos de todos los programas que lo configuraron.
+   *
+   * Va en el back-office y no en la consola del comercio: es un job del
+   * ecosistema, corre por cron, y dejar que un comercio lo dispare a mano sería
+   * darle un botón para vaciar saldos de sus clientes sin trazabilidad.
+   */
+  app.post("/admin/expiry/run", async (_request, reply) => {
+    return reply.send(await runExpiry(db, clock()));
   });
 
   /** Corre la cola de entrega de webhooks de todo el ecosistema. */

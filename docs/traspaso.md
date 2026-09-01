@@ -20,7 +20,7 @@ orden:
 | [`docs/integracion.md`](integracion.md) | Cómo se integra un producto: credenciales, eventos, consultas del POS, webhooks y verificación de firma. |
 | [`docs/google-wallet-verificacion.md`](google-wallet-verificacion.md) | Los valores que la documentación de Google define de forma contradictoria, y cuáles se verificaron contra la API real. |
 
-Suite al momento de escribir esto: **197 casos en 12 archivos**, todos pasando.
+Suite al momento de escribir esto: **246 casos en 15 archivos**, todos pasando.
 Las invariantes del README están cubiertas por tests — si alguna se rompe, la
 suite falla. Esa es la red de seguridad para tocar el motor de reglas o el
 ledger.
@@ -162,8 +162,23 @@ identificado qué modelos son ni si soportan VAS. **No bloquear el v1 por esto.*
   ya resuelve el desfasaje cuando la wallet no responde, y la invariante 6 del
   README aplica igual a Apple.
 
-`packages/passes` hoy es solo Google. Conviene que Apple entre como un segundo
-emisor detrás de la misma interfaz, no como una rama paralela.
+### Lo que ya está construido de esta fase
+
+Al 2026-09-01, con la membresía de Apple activa, se construyó la mitad que no
+depende de tener certificados en la mano:
+
+- `packages/passes/src/apple/` — `pass.json`, manifiesto, firma PKCS#7 separada
+  y el zip del `.pkpass`. Los tests lo validan con el `unzip` y el `openssl` del
+  sistema, no con el mismo código que lo escribe.
+- `apps/api/src/apple.ts` y las rutas `/apple/v1/*` — registro de dispositivos,
+  baja, listado de pases con cambios y el log del dispositivo.
+
+Apple entró como un segundo emisor detrás de la misma interfaz que Google, no
+como una rama paralela: el diseño y la identidad del comercio se comparten.
+
+**Queda:** el alta automatizada de Pass Type IDs con su certificado por comercio,
+y el envío por APNs. Sin material de firma real no se emitió ningún pase todavía,
+y `GET /apple/v1/passes/...` responde 503 con motivo explícito hasta que lo haya.
 
 ---
 
@@ -209,9 +224,11 @@ marketplace de consumidor queda posible o clausurado para siempre:
 
 - **El contrato con comercios** — evitar la cláusula estándar «Sophos no usará
   los datos para ningún otro fin».
-- **La segunda casilla de consentimiento del alta** — que no diga solo
-  «reutilizar tu identidad en altas futuras», porque eso no cubriría un uso
-  posterior de perfil de consumo.
+- ~~**La segunda casilla de consentimiento del alta**~~ — **hecho.** La
+  redacción `identidad/v2` nombra también el segundo fin posible sin prometerlo.
+  El catálogo de textos está en `apps/join/src/consent.ts`, con el id pegado al
+  texto que etiqueta y las versiones retiradas conservadas. Falta que un abogado
+  la confirme contra la Ley 7593/2025 antes de firmar el primer comercio.
 
 Dejar la puerta abierta hoy cuesta cero: es solo cómo se redactan dos textos.
 Cerrarla es irreversible en la práctica — renegociar con decenas de comercios

@@ -174,8 +174,18 @@ en que lo busca, sin depender de ninguna notificación ni de ninguna wallet.
 ## Pendiente antes de producción
 
 - [ ] Reemplazar `tsx` por un build compilado para el runtime de producción.
-- [ ] Webhooks salientes firmados con HMAC (`reward.available`, `balance_changed`).
-- [ ] Vencimiento de puntos (`expiry` ya se configura, falta el job que lo aplica).
-- [ ] Ajustes manuales con PIN de staff y audit log.
+- [x] Webhooks salientes firmados con HMAC. Ver `packages/sdk/src/signature.ts`:
+      firmante y verificador comparten el módulo, para que no puedan discrepar.
+- [x] Vencimiento de puntos. `apps/api/src/expiry.ts`, expuesto en
+      `POST /admin/expiry/run` para que lo dispare un cron.
 - [ ] Rate limits por comercio y por membresía.
 - [ ] Auditoría periódica de saldos con `auditBalance`.
+- [ ] Apple Wallet: alta automatizada de Pass Type IDs con certificado por
+      comercio, y envío por APNs. El emisor de `.pkpass` y el web service de
+      actualización ya están.
+
+**Ajustes manuales con PIN de staff: no va acá.** Estaba anotado como pendiente,
+pero loyalty no tiene modelo de usuarios — `redeemedBy` es un string que manda el
+producto. Los roles y el PIN pertenecen a ElMenu y Noctu, que sí saben quién es
+cada mozo. Lo que sí corresponde de este lado es que el asiento guarde el actor
+que le informan, y eso ya lo hace.
