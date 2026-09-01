@@ -77,4 +77,5 @@ export type {
   AscClient,
   AscConfig,
   PassTypeIdResource,
+  CertificateResource,
 } from "./apple/index.js";

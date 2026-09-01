@@ -34,4 +34,4 @@ export { appleImagesFrom, shrinkPng, ResizeError, APPLE_ICON_PX, APPLE_LOGO_PX }
 export type { AppleImages } from "./resize.js";
 
 export { createAscClient, derToPem, AscError } from "./asc.js";
-export type { AscClient, AscConfig, PassTypeIdResource } from "./asc.js";
+export type { AscClient, AscConfig, CertificateResource, PassTypeIdResource } from "./asc.js";

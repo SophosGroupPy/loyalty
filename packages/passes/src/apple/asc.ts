@@ -57,6 +57,28 @@ export interface AscClient {
   createPassTypeId(identifier: string, name: string): Promise<PassTypeIdResource>;
   /** Devuelve el certificado en PEM, listo para firmar pases. */
   createCertificate(passTypeIdResourceId: string, csrPem: string): Promise<string>;
+  listCertificates(): Promise<CertificateResource[]>;
+  /**
+   * Revoca un certificado. **Irreversible.**
+   *
+   * **Ojo: Apple no deja revocar todos.** Probado el 2026-09-01 contra un
+   * certificado de Pass Type ID creado desde el portal, responde 403 con
+   * "This certificate can only be revoked by Apple Developer Program Support",
+   * y la página de ese certificado en el portal tampoco ofrece revocarlo — solo
+   * descargarlo. Queda como única salida abrir un caso con soporte de Apple.
+   *
+   * Sin verificar: si un certificado creado **por esta misma API** sí se puede
+   * revocar. El mensaje de error lo sugiere pero no lo dice, y comprobarlo
+   * implicaba revocar el certificado bueno que estaba en uso.
+   */
+  revokeCertificate(certificateId: string): Promise<void>;
+}
+
+export interface CertificateResource {
+  id: string;
+  name: string;
+  serialNumber: string;
+  expiresAt: Date;
 }
 
 export function createAscClient(config: AscConfig, fetchImpl: typeof fetch = fetch): AscClient {
@@ -105,6 +127,8 @@ export function createAscClient(config: AscConfig, fetchImpl: typeof fetch = fet
       );
     }
 
+    // Un DELETE exitoso responde 204 sin cuerpo, y pedirle JSON revienta.
+    if (response.status === 204) return undefined as T;
     return (await response.json()) as T;
   }
 
@@ -156,6 +180,28 @@ export function createAscClient(config: AscConfig, fetchImpl: typeof fetch = fet
       // Apple devuelve el certificado en DER codificado en base64; los pases se
       // firman con PEM. La conversión va acá para que nadie tenga que recordarla.
       return derToPem(body.data.attributes.certificateContent);
+    },
+
+    async listCertificates() {
+      const body = await request<
+        Envelope<
+          {
+            id: string;
+            attributes: { name: string; serialNumber: string; expirationDate: string };
+          }[]
+        >
+      >("GET", "/certificates?filter[certificateType]=PASS_TYPE_ID&limit=200");
+
+      return body.data.map((c) => ({
+        id: c.id,
+        name: c.attributes.name,
+        serialNumber: c.attributes.serialNumber,
+        expiresAt: new Date(c.attributes.expirationDate),
+      }));
+    },
+
+    async revokeCertificate(certificateId) {
+      await request<void>("DELETE", `/certificates/${encodeURIComponent(certificateId)}`);
     },
   };
 }

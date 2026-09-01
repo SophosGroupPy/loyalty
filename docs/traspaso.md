@@ -268,6 +268,7 @@ Están acá para que nadie las vuelva a descubrir.
 | Aprobación de clases | Las clases se aprueban solas: vuelven `approved` pese a enviarse como `UNDER_REVIEW`. Dar de alta un comercio nuevo es instantáneo. |
 | Actualización de saldo | Verificado contra la API real: el saldo se actualiza en una tarjeta ya guardada sin reemitirla. |
 | Tope de notificaciones | 3 por tarjeta cada 24 h, regla de Google. Apple no publica una. Se controla del lado de Sophos porque el Issuer es único para todo el ecosistema: si un comercio abusa, el throttling afecta a todos. |
+| Revocar un Pass Type ID | **No se puede** desde la API ni desde el portal. La API responde 403 con "This certificate can only be revoked by Apple Developer Program Support", y la página del certificado solo ofrece descargarlo. La única salida es abrir un caso con soporte. Verificado el 2026-09-01. |
 | `.railwayignore` | `railway up` sube el directorio **tal como está en disco**, no lo commiteado. El `.gitignore` no protege ahí — por eso existe el `.railwayignore` que excluye `.env.local`. |
 
 Queda sin verificar lo que requiere un teléfono Android real: las geocercas y
