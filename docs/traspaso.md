@@ -80,9 +80,30 @@ Merchant ID      BCR2DN6D3KFLZNRV
 ```
 Apple ID de la cuenta  dev@sophosgroup.com.py
 Entidad legal          SOPHOS GROUP E.A.S.
+Team ID                3W23SYPG6H
 D-U-N-S                955801894
 Enrollment ID          PQLR6DGS4Y
 ```
+
+El Team ID va en `teamIdentifier` de cada pase. No es secreto: viaja adentro del
+`.pkpass` y aparece en el `OU` del certificado.
+
+**Pass Type IDs registrados** — uno por comercio, ver la sección 3:
+
+| Comercio | Pass Type ID | Certificado vence |
+|---|---|---|
+| Don Julio (prueba) | `pass.com.sophosgroup.l.don-julio` | 2027-10-01 |
+
+Los certificados de Pass Type ID **vencen al año**. Con un certificado por
+comercio, la renovación deja de ser un trámite anual y pasa a ser un
+calendario: hay que automatizarla junto con el alta, o un día los pases de
+algún comercio dejan de poder actualizarse.
+
+**Material de firma.** Vive en `certs/<slug>/` y no va al repo — `certs/` está en
+`.gitignore` y la clave privada tiene permisos 600. En producción va al gestor
+de secretos, cifrada. Por comercio hacen falta tres archivos: `private.key`
+(generada localmente, nunca sale de ahí), `certificate.pem` (el que emite Apple
+a partir del CSR) y el intermedio compartido `certs/wwdr.pem`.
 
 ### Variables de entorno
 
