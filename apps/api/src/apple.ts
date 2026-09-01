@@ -12,11 +12,14 @@
  * que se autentica con el `authenticationToken` del propio pase.
  */
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, createPrivateKey, timingSafeEqual, X509Certificate } from "node:crypto";
 
 import { sql } from "drizzle-orm";
 
 import { rows, type Db } from "@sophos/db";
+import type { PassSigningMaterial } from "@sophos/passes";
+
+import { open, seal, SecretError } from "./secrets.js";
 
 /**
  * Credencial que el pase le muestra al web service.
@@ -213,4 +216,131 @@ export async function dropPushToken(db: Db, pushToken: string): Promise<void> {
     db.drizzle,
     sql`DELETE FROM apple_device_registration WHERE push_token = ${pushToken}`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Material de firma por comercio
+// ---------------------------------------------------------------------------
+
+export interface StoreCertificateInput {
+  merchantId: string;
+  passTypeIdentifier: string;
+  certificatePem: string;
+  privateKeyPem: string;
+}
+
+/**
+ * Guarda el certificado de un comercio, cifrando la clave privada.
+ *
+ * La fecha de vencimiento se lee del propio certificado en vez de pedirla: es
+ * un dato que ya está ahí, y escribirlo a mano es una forma barata de que
+ * quede mal justo en el campo que sirve para avisar antes de que se caiga.
+ */
+export async function storeCertificate(
+  db: Db,
+  input: StoreCertificateInput,
+  encryptionKey: Buffer,
+): Promise<{ expiresAt: Date }> {
+  const cert = new X509Certificate(input.certificatePem);
+  const expiresAt = new Date(cert.validTo);
+
+  if (Number.isNaN(expiresAt.getTime())) {
+    throw new SecretError("No se pudo leer la fecha de vencimiento del certificado.");
+  }
+
+  // Que el certificado corresponda a la clave: si no, todo se guarda bien, todo
+  // parece funcionar, y los pases salen con una firma que iOS rechaza sin decir
+  // por qué. Comprobarlo acá cuesta una línea.
+  if (!cert.checkPrivateKey(createPrivateKey(input.privateKeyPem))) {
+    throw new SecretError(
+      "El certificado no corresponde a esta clave privada. Revisá que el .cer sea el que emitió Apple a partir de este CSR.",
+    );
+  }
+
+  const sealed = seal(input.privateKeyPem, encryptionKey);
+
+  await rows(
+    db.drizzle,
+    sql`INSERT INTO pass_certificate
+          (merchant_id, pass_type_identifier, certificate_pem,
+           private_key_ciphertext, private_key_nonce, private_key_tag, expires_at)
+        VALUES (${input.merchantId}, ${input.passTypeIdentifier}, ${input.certificatePem},
+                ${sealed.ciphertext}, ${sealed.nonce}, ${sealed.tag},
+                ${expiresAt.toISOString()})
+        ON CONFLICT (merchant_id) DO UPDATE
+          SET pass_type_identifier   = EXCLUDED.pass_type_identifier,
+              certificate_pem        = EXCLUDED.certificate_pem,
+              private_key_ciphertext = EXCLUDED.private_key_ciphertext,
+              private_key_nonce      = EXCLUDED.private_key_nonce,
+              private_key_tag        = EXCLUDED.private_key_tag,
+              expires_at             = EXCLUDED.expires_at`,
+  );
+
+  return { expiresAt };
+}
+
+/**
+ * Recupera el material de firma de un Pass Type ID.
+ *
+ * Devuelve `null` si ese comercio todavía no tiene certificado cargado, que es
+ * un estado normal mientras se dan de alta comercios — no un error.
+ */
+export async function loadSigningMaterial(
+  db: Db,
+  passTypeIdentifier: string,
+  encryptionKey: Buffer,
+  wwdrCertificatePem: string,
+): Promise<PassSigningMaterial | null> {
+  const found = await rows<{
+    certificate_pem: string;
+    private_key_ciphertext: Buffer;
+    private_key_nonce: Buffer;
+    private_key_tag: Buffer;
+  }>(
+    db.drizzle,
+    sql`SELECT certificate_pem, private_key_ciphertext, private_key_nonce, private_key_tag
+        FROM pass_certificate WHERE pass_type_identifier = ${passTypeIdentifier}`,
+  );
+
+  const row = found[0];
+  if (!row) return null;
+
+  return {
+    passTypeIdentifier,
+    certificatePem: row.certificate_pem,
+    privateKeyPem: open(
+      {
+        ciphertext: Buffer.from(row.private_key_ciphertext),
+        nonce: Buffer.from(row.private_key_nonce),
+        tag: Buffer.from(row.private_key_tag),
+      },
+      encryptionKey,
+    ),
+    wwdrCertificatePem,
+  };
+}
+
+/** Certificados que vencen pronto. Un pase con el certificado vencido no se actualiza. */
+export async function expiringCertificates(
+  db: Db,
+  withinDays: number,
+  now: Date = new Date(),
+): Promise<{ merchantId: string; passTypeIdentifier: string; expiresAt: Date }[]> {
+  const limit = new Date(now.getTime() + withinDays * 24 * 60 * 60 * 1000);
+
+  const found = await rows<{
+    merchant_id: string;
+    pass_type_identifier: string;
+    expires_at: Date;
+  }>(
+    db.drizzle,
+    sql`SELECT merchant_id, pass_type_identifier, expires_at FROM pass_certificate
+        WHERE expires_at < ${limit.toISOString()} ORDER BY expires_at`,
+  );
+
+  return found.map((r) => ({
+    merchantId: r.merchant_id,
+    passTypeIdentifier: r.pass_type_identifier,
+    expiresAt: new Date(r.expires_at),
+  }));
 }

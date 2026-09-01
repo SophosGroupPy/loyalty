@@ -49,6 +49,8 @@ export {
   DEFAULT_MAX_DISTANCE,
   MAX_LOCATIONS,
   NEWS_FIELD_KEY,
+  isPng,
+  solidPng,
 } from "./apple/index.js";
 
 export type {

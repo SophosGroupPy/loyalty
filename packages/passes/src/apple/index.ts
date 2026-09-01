@@ -27,3 +27,5 @@ export type {
   PassSigningMaterial,
   StoreCardFields,
 } from "./types.js";
+
+export { isPng, solidPng } from "./png.js";

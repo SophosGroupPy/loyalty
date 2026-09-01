@@ -17,12 +17,16 @@ import { rows, type Db } from "@sophos/db";
 
 import { runExpiry } from "./expiry.js";
 import {
+  expiringCertificates,
   markPassUpdated,
   passesUpdatedSince,
   registerDevice,
+  storeCertificate,
   unregisterDevice,
   verifyPassAuth,
 } from "./apple.js";
+import { createAppleIssuer } from "./apple-pass.js";
+import { encryptionKeyFrom, SecretError } from "./secrets.js";
 import type { WebhookEventType } from "@sophos/loyalty-sdk";
 import { validateConfig, type ProgramConfig } from "@sophos/rules";
 
@@ -103,6 +107,18 @@ export interface ServerOptions {
   logger?: boolean;
   /** Sin esto, los endpoints de wallet responden 503 y el resto sigue andando. */
   googleWallet?: GoogleWalletConfig;
+  /**
+   * Apple Wallet. Sin esto se pueden registrar dispositivos pero no emitir
+   * pases: la emisión necesita el material de firma, que llega cifrado.
+   */
+  appleWallet?: {
+    teamIdentifier: string;
+    webServiceURL: string;
+    /** 32 bytes en hex o base64. Descifra las claves privadas guardadas. */
+    encryptionKey?: string;
+    /** Intermedio WWDR de Apple, en PEM. */
+    wwdrCertificatePem?: string;
+  };
   /** Inyectable para testear la capa de pases sin red. */
   fetchImpl?: typeof fetch;
   /** Permite sustituir el servicio completo en los tests. */
@@ -157,6 +173,22 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     opts.passService ?? createPassService(db, opts.googleWallet, opts.fetchImpl);
 
   const clock = opts.now ?? (() => new Date());
+
+  // Si la clave viene mal formada conviene que el arranque falle acá y no en la
+  // primera emisión: un servidor que levanta y después no puede firmar es peor
+  // que uno que no levanta.
+  const encryptionKey = encryptionKeyFrom(opts.appleWallet?.encryptionKey);
+
+  const appleIssuer = createAppleIssuer(db, {
+    config: {
+      teamIdentifier: opts.appleWallet?.teamIdentifier ?? "",
+      webServiceURL: opts.appleWallet?.webServiceURL ?? "",
+    },
+    encryptionKey,
+    wwdrCertificatePem: opts.appleWallet?.wwdrCertificatePem ?? null,
+    signingKey,
+    ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+  });
 
   // Sin credenciales de wallet el despachador sigue funcionando entero contra la
   // consola: se puede verificar cupo, prioridad y agrupamiento sin depender de
@@ -1243,6 +1275,52 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     return reply.send(await runExpiry(db, clock()));
   });
 
+  /**
+   * Carga el certificado de Pass Type ID de un comercio.
+   *
+   * Va en el back-office porque es material de firma del ecosistema: quien lo
+   * sube puede emitir pases en nombre de ese comercio. La clave privada llega
+   * en PEM y se guarda cifrada; nunca se devuelve.
+   */
+  app.put("/admin/merchants/:id/pass-certificate", async (request, reply) => {
+    if (!encryptionKey) {
+      return reply.code(503).send({ error: "encryption_key_missing" });
+    }
+
+    const parsed = z
+      .object({
+        passTypeIdentifier: z.string().min(1),
+        certificatePem: z.string().min(1),
+        privateKeyPem: z.string().min(1),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const { id } = request.params as { id: string };
+
+    try {
+      const { expiresAt } = await storeCertificate(
+        db,
+        { merchantId: id, ...parsed.data },
+        encryptionKey,
+      );
+      return reply.send({ passTypeIdentifier: parsed.data.passTypeIdentifier, expiresAt });
+    } catch (error) {
+      if (error instanceof SecretError) {
+        return reply.code(400).send({ error: "invalid_material", message: error.message });
+      }
+      throw error;
+    }
+  });
+
+  /** Certificados por vencer. Un pase con el certificado vencido no se actualiza. */
+  app.get("/admin/pass-certificates/expiring", async (request, reply) => {
+    const days = Number((request.query as { days?: string }).days ?? 60);
+    return reply.send({
+      certificates: await expiringCertificates(db, Number.isFinite(days) ? days : 60, clock()),
+    });
+  });
+
   /** Corre la cola de entrega de webhooks de todo el ecosistema. */
   app.post("/admin/webhooks/deliver", async (_request, reply) => {
     return reply.send(
@@ -2262,11 +2340,26 @@ export function createServer(opts: ServerOptions): FastifyInstance {
         return reply.code(401).send();
       }
 
-      // Falta el material de firma por comercio: sin el certificado del Pass
-      // Type ID no se puede emitir un `.pkpass` que iOS acepte. Se responde
-      // explícito en vez de devolver un archivo inválido, que el teléfono
-      // rechazaría sin decir por qué.
-      return reply.code(503).send({ error: "apple_signing_not_configured" });
+      const result = await appleIssuer.issue(
+        request.params.passTypeIdentifier,
+        request.params.serialNumber,
+      );
+
+      if (result.status === "not_found") return reply.code(404).send();
+      if (result.status !== "ok") {
+        // Sin material de firma no se puede emitir un `.pkpass` que iOS acepte.
+        // Se responde explícito en vez de devolver un archivo inválido, que el
+        // teléfono rechazaría sin decir por qué.
+        return reply.code(503).send({ error: `apple_${result.status}` });
+      }
+
+      // `Last-Modified` es lo que usa el dispositivo para no volver a bajar un
+      // pase que ya tiene. Sin esto se descarga entero en cada consulta.
+      return reply
+        .code(200)
+        .header("content-type", "application/vnd.apple.pkpass")
+        .header("last-modified", result.updatedAt.toUTCString())
+        .send(result.pkpass);
     },
   );
 

@@ -61,6 +61,7 @@ describe("migraciones", () => {
       "merchant_location",
       "notification",
       "otp_challenge",
+      "pass_certificate",
       "pass_instance",
       "person",
       "product",

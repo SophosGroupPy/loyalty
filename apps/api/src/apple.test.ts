@@ -304,16 +304,17 @@ describe("pases con cambios", () => {
 });
 
 describe("entrega del pase", () => {
-  it("dice que falta el material de firma en vez de devolver un archivo roto", async () => {
-    // Sin el certificado del Pass Type ID no se puede emitir un .pkpass que iOS
-    // acepte. Un archivo inválido lo rechazaría el teléfono sin decir por qué.
+  it("dice por qué no puede emitir, en vez de devolver un archivo roto", async () => {
+    // Este servidor se levanta sin configuración de Apple Wallet, así que el
+    // motivo es `disabled`. Lo que importa es que el motivo sea explícito: un
+    // .pkpass inválido lo rechazaría el teléfono sin decir nada.
     const res = await app.inject({
       method: "GET",
       url: `/apple/v1/passes/${PASS_TYPE}/${SERIAL}`,
       headers: { authorization: auth() },
     });
     expect(res.statusCode).toBe(503);
-    expect(res.json().error).toBe("apple_signing_not_configured");
+    expect(res.json().error).toBe("apple_disabled");
   });
 
   it("exige credencial igual", async () => {

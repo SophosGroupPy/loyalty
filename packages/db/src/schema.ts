@@ -9,6 +9,7 @@
  */
 
 import {
+  customType,
   date,
   doublePrecision,
   integer,
@@ -18,6 +19,9 @@ import {
   timestamp,
   uuid,
 } from "drizzle-orm/pg-core";
+
+/** Drizzle no trae `bytea`; lo usamos para los secretos cifrados. */
+const bytea = customType<{ data: Buffer }>({ dataType: () => "bytea" });
 
 import type { CardDesign } from "@sophos/passes";
 import type { EarnTrace, ProgramConfig } from "@sophos/rules";
@@ -85,6 +89,24 @@ export const appleDeviceRegistration = pgTable("apple_device_registration", {
   membershipId: uuid("membership_id").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Certificado de Pass Type ID por comercio. Ver `migrations/0008_*.sql`.
+ *
+ * La clave privada va cifrada; el certificado no, porque es público y viaja
+ * dentro de cada `.pkpass` que se emite.
+ */
+export const passCertificate = pgTable("pass_certificate", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  merchantId: uuid("merchant_id").notNull(),
+  passTypeIdentifier: text("pass_type_identifier").notNull(),
+  certificatePem: text("certificate_pem").notNull(),
+  privateKeyCiphertext: bytea("private_key_ciphertext").notNull(),
+  privateKeyNonce: bytea("private_key_nonce").notNull(),
+  privateKeyTag: bytea("private_key_tag").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const program = pgTable("program", {
