@@ -197,9 +197,38 @@ depende de tener certificados en la mano:
 Apple entró como un segundo emisor detrás de la misma interfaz que Google, no
 como una rama paralela: el diseño y la identidad del comercio se comparten.
 
-**Queda:** el alta automatizada de Pass Type IDs con su certificado por comercio,
-y el envío por APNs. Sin material de firma real no se emitió ningún pase todavía,
-y `GET /apple/v1/passes/...` responde 503 con motivo explícito hasta que lo haya.
+Después se completó la emisión y el aviso:
+
+- `apps/api/src/apple-pass.ts` — emite el `.pkpass` con el certificado del
+  comercio, guardado cifrado en `pass_certificate`. Verificado con el
+  certificado real de Don Julio y con el pase instalado en un iPhone.
+- `apps/api/src/apns.ts` — el push de payload vacío que despierta al teléfono.
+
+**Queda:** el alta automatizada de Pass Type IDs con su certificado por comercio
+(necesita una API key de App Store Connect) y redimensionar los logos.
+
+### Lo que sigue sin verificarse de Apple
+
+| Qué | Por qué no se pudo |
+|---|---|
+| El push llega al teléfono | Necesita un push token real, y el dispositivo solo lo entrega cuando logra registrarse contra el web service — o sea, después del deploy |
+| El valor de `apns-push-type` | Hoy se omite el header, que es lo que hacen las implementaciones históricas. Está centralizado en `APNS_PUSH_TYPE`, como los literales de Google: si hay que cambiarlo, se cambia en un solo lugar |
+| La geocerca en iOS | Necesita estar cerca del local con el pase instalado |
+
+### Tamaño de los logos
+
+No se redimensiona nada. Con un logo de 1024x1024 y 166 KB, el `.pkpass` queda
+en **337 KB**, porque el mismo archivo se usa para el ícono de 29 puntos y para
+el logo. El pase se rebaja entero en cada cambio de saldo, así que ese peso es
+tráfico recurrente: con 500 clientes que consumen tres veces por semana son unos
+500 MB semanales para un solo comercio.
+
+Hay un tope de 512 KB al archivo que se baja, pero es la última defensa, no la
+solución. Lo que corresponde es redimensionar **al subir el logo en la consola**:
+se procesa una vez en vez de en cada emisión, el comercio ve al instante si su
+logo quedó mal, y se guardan las medidas que pide Apple (29, 58 y 87 px para el
+ícono; 160x50 para el logo). Requiere sumar una librería de imágenes, que hoy no
+existe en el proyecto.
 
 ---
 

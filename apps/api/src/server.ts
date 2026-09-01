@@ -26,6 +26,7 @@ import {
   verifyPassAuth,
 } from "./apple.js";
 import { createAppleIssuer } from "./apple-pass.js";
+import { createApnsClient, pushPassUpdate, type ApnsClient } from "./apns.js";
 import { encryptionKeyFrom, SecretError } from "./secrets.js";
 import type { WebhookEventType } from "@sophos/loyalty-sdk";
 import { validateConfig, type ProgramConfig } from "@sophos/rules";
@@ -118,6 +119,11 @@ export interface ServerOptions {
     encryptionKey?: string;
     /** Intermedio WWDR de Apple, en PEM. */
     wwdrCertificatePem?: string;
+    /**
+     * Cliente de APNs. Se inyecta en los tests: el real abre una conexión TLS
+     * contra Apple y no hay forma de probarlo sin un push token de verdad.
+     */
+    apns?: ApnsClient;
   };
   /** Inyectable para testear la capa de pases sin red. */
   fetchImpl?: typeof fetch;
@@ -178,6 +184,11 @@ export function createServer(opts: ServerOptions): FastifyInstance {
   // primera emisión: un servidor que levanta y después no puede firmar es peor
   // que uno que no levanta.
   const encryptionKey = encryptionKeyFrom(opts.appleWallet?.encryptionKey);
+
+  // Sin cliente inyectado se usa el real. Solo se construye si hay con qué
+  // firmar: sin material no hay nada que empujar.
+  const apns: ApnsClient | null =
+    opts.appleWallet?.apns ?? (encryptionKey ? createApnsClient() : null);
 
   const appleIssuer = createAppleIssuer(db, {
     config: {
@@ -252,9 +263,23 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     // cambió y el iPhone viene a buscarlo cuando recibe el push. Marcarlo es
     // barato y no depende de que Apple esté disponible; si no se marcara, el
     // dispositivo nunca se enteraría de que el saldo cambió.
-    void markPassUpdated(db, membershipId).catch((error) => {
-      app.log.error({ err: error, membershipId }, "no se pudo marcar el pase de Apple");
-    });
+    void markPassUpdated(db, membershipId)
+      .then(async () => {
+        // El push va después de marcar, nunca antes: si se invirtiera y el push
+        // llegara primero, el teléfono vendría a buscar un pase que todavía
+        // tiene el saldo viejo y se quedaría con ese hasta el próximo consumo.
+        if (!apns || !encryptionKey || !opts.appleWallet?.wwdrCertificatePem) return;
+        await pushPassUpdate(
+          db,
+          membershipId,
+          apns,
+          encryptionKey,
+          opts.appleWallet.wwdrCertificatePem,
+        );
+      })
+      .catch((error) => {
+        app.log.error({ err: error, membershipId }, "no se pudo avisar del cambio a Apple");
+      });
   }
 
   // --------------------------------------------------------------------------
@@ -1311,6 +1336,23 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       }
       throw error;
     }
+  });
+
+  /**
+   * Reintenta el aviso a los dispositivos de una tarjeta.
+   *
+   * El envío normal sale solo al acumular y no se espera —una caída de Apple no
+   * puede hacer fallar una acumulación—, así que hace falta una forma de
+   * reintentar sin tocar el saldo del cliente.
+   */
+  app.post("/admin/apple/push/:membershipId", async (request, reply) => {
+    const wwdr = opts.appleWallet?.wwdrCertificatePem;
+    if (!apns || !encryptionKey || !wwdr) {
+      return reply.code(503).send({ error: "apple_disabled" });
+    }
+
+    const { membershipId } = request.params as { membershipId: string };
+    return reply.send(await pushPassUpdate(db, membershipId, apns, encryptionKey, wwdr));
   });
 
   /** Certificados por vencer. Un pase con el certificado vencido no se actualiza. */

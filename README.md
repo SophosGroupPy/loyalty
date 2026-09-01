@@ -181,8 +181,10 @@ en que lo busca, sin depender de ninguna notificación ni de ninguna wallet.
 - [ ] Rate limits por comercio y por membresía.
 - [ ] Auditoría periódica de saldos con `auditBalance`.
 - [ ] Apple Wallet: alta automatizada de Pass Type IDs con certificado por
-      comercio, y envío por APNs. El emisor de `.pkpass` y el web service de
-      actualización ya están.
+      comercio. El emisor de `.pkpass`, el web service y el envío por APNs ya
+      están; el push no se pudo probar contra Apple porque hace falta un token
+      real, que llega recién con el deploy.
+- [ ] Redimensionar los logos al subirlos en la consola. Ver `docs/traspaso.md`.
 
 **Ajustes manuales con PIN de staff: no va acá.** Estaba anotado como pendiente,
 pero loyalty no tiene modelo de usuarios — `redeemedBy` es un string que manda el
