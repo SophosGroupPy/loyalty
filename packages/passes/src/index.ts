@@ -56,6 +56,9 @@ export {
   ResizeError,
   APPLE_ICON_PX,
   APPLE_LOGO_PX,
+  createAscClient,
+  derToPem,
+  AscError,
 } from "./apple/index.js";
 
 export type {
@@ -71,4 +74,7 @@ export type {
   PkpassInput,
   StoreCardFields,
   ZipEntry,
+  AscClient,
+  AscConfig,
+  PassTypeIdResource,
 } from "./apple/index.js";

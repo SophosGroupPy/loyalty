@@ -186,10 +186,12 @@ en que lo busca, sin depender de ninguna notificación ni de ninguna wallet.
       horizontalmente hay que moverlo a Postgres o Redis.
 - [x] Auditoría de saldos. `auditAllBalances` en una sola consulta, expuesta en
       `GET /admin/audit/balances`. Tiene que devolver siempre la lista vacía.
-- [ ] Apple Wallet: alta automatizada de Pass Type IDs con certificado por
-      comercio. El emisor de `.pkpass`, el web service y el envío por APNs ya
-      están; el push no se pudo probar contra Apple porque hace falta un token
-      real, que llega recién con el deploy.
+- [x] Apple Wallet: alta automatizada de Pass Type IDs con certificado por
+      comercio. `POST /admin/merchants/:id/provision-pass`. Probado una vez
+      contra la API real de Apple.
+- [ ] Verificar el push de APNs contra un teléfono. Hace falta un push token
+      real, y el dispositivo solo lo entrega tras registrarse contra el web
+      service — o sea, después del deploy.
 - [x] Redimensionar los logos. `packages/passes/src/apple/resize.ts`, al emitir
       el pase. Bajó el pase de 337 KB a 12,8 KB con el mismo logo de 1024x1024.
 

@@ -26,9 +26,11 @@ import {
   unregisterDevice,
   verifyPassAuth,
 } from "./apple.js";
-import { createAppleIssuer } from "./apple-pass.js";
+import { ascConfigFromEnv, createAppleIssuer } from "./apple-pass.js";
+import { merchantForProvisioning, provisionPassCertificate } from "./provisioning.js";
 import { createApnsClient, pushPassUpdate, type ApnsClient } from "./apns.js";
 import { createRateLimiter } from "./rate-limit.js";
+import { AscError } from "@sophos/passes";
 import { encryptionKeyFrom, SecretError } from "./secrets.js";
 import type { WebhookEventType } from "@sophos/loyalty-sdk";
 import { validateConfig, type ProgramConfig } from "@sophos/rules";
@@ -1412,6 +1414,40 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     const limit = Number((request.query as { limit?: string }).limit ?? 100);
     const discrepancies = await auditAllBalances(db, Number.isFinite(limit) ? limit : 100);
     return reply.send({ ok: discrepancies.length === 0, discrepancies });
+  });
+
+  /**
+   * Da de alta el material de firma de un comercio contra la API de Apple.
+   *
+   * Reemplaza seis pasos manuales en el portal por una llamada. La clave privada
+   * se genera acá y no sale nunca: a Apple se le manda el CSR, que es público.
+   *
+   * Sirve también para renovar y para rotar: el Pass Type ID se reusa —cambiarlo
+   * dejaría huérfanos los pases ya emitidos— y solo se pide un certificado nuevo.
+   */
+  app.post("/admin/merchants/:id/provision-pass", async (request, reply) => {
+    const asc = ascConfigFromEnv();
+    if (!asc) return reply.code(503).send({ error: "asc_not_configured" });
+    if (!encryptionKey) return reply.code(503).send({ error: "encryption_key_missing" });
+
+    const { id } = request.params as { id: string };
+    const merchant = await merchantForProvisioning(db, id);
+    if (!merchant) return reply.code(404).send({ error: "merchant_not_found" });
+
+    try {
+      return reply.send(
+        await provisionPassCertificate(db, { merchantId: id, ...merchant }, asc, encryptionKey),
+      );
+    } catch (error) {
+      // El detalle de Apple es lo único que distingue "ya existe" de "no tenés
+      // permiso"; tragarlo dejaría al operador sin ninguna pista.
+      if (error instanceof AscError) {
+        return reply
+          .code(502)
+          .send({ error: "apple_rejected", message: error.message, detail: error.detail });
+      }
+      throw error;
+    }
   });
 
   /** Estado del material de firma de todos los comercios, tengan o no. */

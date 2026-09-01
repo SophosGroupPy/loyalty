@@ -204,8 +204,32 @@ Después se completó la emisión y el aviso:
   certificado real de Don Julio y con el pase instalado en un iPhone.
 - `apps/api/src/apns.ts` — el push de payload vacío que despierta al teléfono.
 
-**Queda:** el alta automatizada de Pass Type IDs con su certificado por comercio
-(necesita una API key de App Store Connect) y redimensionar los logos.
+También se automatizó el alta del material de firma:
+
+- `packages/passes/src/apple/asc.ts` — cliente de la App Store Connect API,
+  autenticado con un JWT ES256 firmado con la clave `.p8` del equipo.
+- `apps/api/src/provisioning.ts` — genera el par de claves y el CSR, registra el
+  Pass Type ID, pide el certificado y lo guarda cifrado. Expuesto en
+  `POST /admin/merchants/:id/provision-pass`.
+
+Reemplaza seis pasos manuales en el portal por una llamada, y sirve igual para
+renovar: el Pass Type ID se reusa —cambiarlo dejaría huérfanos los pases ya
+emitidos— y solo se pide un certificado nuevo.
+
+El CSR se arma a mano en DER porque Node no lo trae y una librería de ASN.1 para
+veinte bytes es desproporcionada. Se valida con `openssl` en los tests, no con el
+mismo código que lo escribe.
+
+```
+App Store Connect API
+  Key ID     75X4838467
+  Issuer ID  11b2d435-c4c2-417d-9a0a-bb2b0583b000
+  Rol        Admin
+```
+
+La clave `.p8` **se descarga una sola vez** y no está en el repo. Ojo con el
+alcance: con rol Admin puede tocar toda la cuenta de desarrollador, no solo los
+pases.
 
 ### Lo que sigue sin verificarse de Apple
 

@@ -235,3 +235,27 @@ export function appleWalletConfigFromEnv(): {
       : {}),
   };
 }
+
+
+/**
+ * Credenciales de la App Store Connect API desde el entorno.
+ *
+ * Sin esto, el alta de un comercio sigue siendo manual: se genera el CSR a mano,
+ * se registra el Pass Type ID en el portal y se sube el certificado por la
+ * consola. Funciona, pero son seis pasos por comercio y otros tantos al renovar.
+ */
+export function ascConfigFromEnv(): {
+  keyId: string;
+  issuerId: string;
+  privateKeyPem: string;
+} | null {
+  const keyId = process.env.APPLE_ASC_KEY_ID;
+  const issuerId = process.env.APPLE_ASC_ISSUER_ID;
+  const privateKeyPem = process.env.APPLE_ASC_PRIVATE_KEY;
+
+  if (!keyId || !issuerId || !privateKeyPem) return null;
+
+  // Los `\n` escapados son lo que sale de pegar un .p8 en una variable de
+  // entorno, igual que con la clave de Google y el WWDR.
+  return { keyId, issuerId, privateKeyPem: privateKeyPem.replace(/\\n/g, "\n") };
+}
