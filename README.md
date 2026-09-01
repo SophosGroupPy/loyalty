@@ -178,8 +178,11 @@ en que lo busca, sin depender de ninguna notificación ni de ninguna wallet.
       firmante y verificador comparten el módulo, para que no puedan discrepar.
 - [x] Vencimiento de puntos. `apps/api/src/expiry.ts`, expuesto en
       `POST /admin/expiry/run` para que lo dispare un cron.
-- [ ] Rate limits por comercio y por membresía.
-- [ ] Auditoría periódica de saldos con `auditBalance`.
+- [x] Rate limits por comercio. `apps/api/src/rate-limit.ts`, ventana deslizante
+      sobre las escrituras de `/v1/`. Vive en memoria del proceso: al escalar
+      horizontalmente hay que moverlo a Postgres o Redis.
+- [x] Auditoría de saldos. `auditAllBalances` en una sola consulta, expuesta en
+      `GET /admin/audit/balances`. Tiene que devolver siempre la lista vacía.
 - [ ] Apple Wallet: alta automatizada de Pass Type IDs con certificado por
       comercio. El emisor de `.pkpass`, el web service y el envío por APNs ya
       están; el push no se pudo probar contra Apple porque hace falta un token

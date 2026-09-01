@@ -28,6 +28,7 @@ import {
 } from "./apple.js";
 import { createAppleIssuer } from "./apple-pass.js";
 import { createApnsClient, pushPassUpdate, type ApnsClient } from "./apns.js";
+import { createRateLimiter } from "./rate-limit.js";
 import { encryptionKeyFrom, SecretError } from "./secrets.js";
 import type { WebhookEventType } from "@sophos/loyalty-sdk";
 import { validateConfig, type ProgramConfig } from "@sophos/rules";
@@ -48,7 +49,7 @@ import {
   type ResolvedMerchant,
   type TokenClaims,
 } from "./auth.js";
-import { applyEvent, redeem } from "./ledger.js";
+import { applyEvent, auditAllBalances, redeem } from "./ledger.js";
 import { enroll, lookup, normalizePhone } from "./memberships.js";
 import {
   createConsoleOtpSender,
@@ -107,6 +108,11 @@ export interface ServerOptions {
   db: Db;
   signingKey: Uint8Array;
   logger?: boolean;
+  /**
+   * Tope de escrituras por comercio. Por defecto 600 por minuto, que es holgado
+   * para un local lleno y corta un bucle desbocado.
+   */
+  rateLimit?: { max: number; windowMs: number };
   /** Sin esto, los endpoints de wallet responden 503 y el resto sigue andando. */
   googleWallet?: GoogleWalletConfig;
   /**
@@ -180,6 +186,14 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     opts.passService ?? createPassService(db, opts.googleWallet, opts.fetchImpl);
 
   const clock = opts.now ?? (() => new Date());
+
+  // Solo sobre las escrituras: las lecturas del POS son baratas y limitarlas
+  // rompería la búsqueda de un cliente en una noche cargada, que es justo
+  // cuando más se usa.
+  const escrituras = createRateLimiter(
+    opts.rateLimit ?? { max: 600, windowMs: 60_000 },
+    () => clock().getTime(),
+  );
 
   // Si la clave viene mal formada conviene que el arranque falle acá y no en la
   // primera emisión: un servidor que levanta y después no puede firmar es peor
@@ -304,6 +318,26 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     }
 
     request.claims = claims;
+
+    // El límite va después de autenticar: sin token no hay comercio contra el
+    // cual contar, y contar por IP castigaría a todos los comercios que estén
+    // detrás del mismo backend — que es exactamente el caso, porque ElMenu
+    // llama por todos los suyos desde un solo servidor.
+    if (request.method !== "GET") {
+      const merchant = (request.body as { merchant?: string } | undefined)?.merchant;
+      const resultado = escrituras.check(`${claims.productId}:${merchant ?? "-"}`);
+
+      if (!resultado.allowed) {
+        return reply
+          .code(429)
+          .header("retry-after", String(resultado.retryAfterSeconds))
+          .send({
+            error: "rate_limited",
+            message: "Demasiadas escrituras para este comercio. Reintentá en unos segundos.",
+            retryAfterSeconds: resultado.retryAfterSeconds,
+          });
+      }
+    }
   });
 
   /**
@@ -1364,6 +1398,20 @@ export function createServer(opts: ServerOptions): FastifyInstance {
 
     const { membershipId } = request.params as { membershipId: string };
     return reply.send(await pushPassUpdate(db, membershipId, apns, encryptionKey, wwdr));
+  });
+
+  /**
+   * Tarjetas cuyo saldo no cuadra con su ledger.
+   *
+   * Tiene que devolver siempre la lista vacía. Si alguna vez devuelve algo, hay
+   * un camino de escritura que se saltó el servicio de ledger, y conviene
+   * enterarse por este endpoint y no porque un comercio discuta el saldo de un
+   * cliente. Corre por cron, como el vencimiento y el despachador.
+   */
+  app.get("/admin/audit/balances", async (request, reply) => {
+    const limit = Number((request.query as { limit?: string }).limit ?? 100);
+    const discrepancies = await auditAllBalances(db, Number.isFinite(limit) ? limit : 100);
+    return reply.send({ ok: discrepancies.length === 0, discrepancies });
   });
 
   /** Estado del material de firma de todos los comercios, tengan o no. */

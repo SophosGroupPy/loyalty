@@ -416,3 +416,54 @@ function emptyTrace(occurredAt: Date, day?: string): EventResult["trace"] {
     businessDay: day ?? businessDay(occurredAt, DEFAULT_TIMEZONE, 0),
   };
 }
+
+export interface BalanceDiscrepancy {
+  membershipId: string;
+  merchantId: string;
+  serialNumber: string;
+  stored: number;
+  computed: number;
+}
+
+/**
+ * Busca tarjetas cuyo saldo guardado no coincida con la suma de sus asientos.
+ *
+ * Es la red de seguridad de la invariante principal: el saldo es una proyección
+ * del ledger y solo se escribe en la misma transacción que el asiento. Si esto
+ * alguna vez devuelve algo, hay un camino de escritura que se saltó el servicio
+ * de ledger — y el momento de enterarse es ahora, no cuando un comercio discute
+ * el saldo de un cliente.
+ *
+ * Se resuelve en una sola consulta y no una por tarjeta: con decenas de miles
+ * de socios, ir de a una sería un job que nunca termina.
+ */
+export async function auditAllBalances(
+  db: Db,
+  limit = 100,
+): Promise<BalanceDiscrepancy[]> {
+  const found = await rows<{
+    membership_id: string;
+    merchant_id: string;
+    serial_number: string;
+    stored: number;
+    computed: number;
+  }>(
+    db.drizzle,
+    sql`SELECT m.id AS membership_id, m.merchant_id, m.serial_number,
+               m.balance AS stored,
+               COALESCE(SUM(l.amount), 0)::int AS computed
+        FROM membership m
+        LEFT JOIN ledger_entry l ON l.membership_id = m.id
+        GROUP BY m.id, m.merchant_id, m.serial_number, m.balance
+        HAVING m.balance <> COALESCE(SUM(l.amount), 0)
+        LIMIT ${limit}`,
+  );
+
+  return found.map((r) => ({
+    membershipId: r.membership_id,
+    merchantId: r.merchant_id,
+    serialNumber: r.serial_number,
+    stored: r.stored,
+    computed: r.computed,
+  }));
+}
