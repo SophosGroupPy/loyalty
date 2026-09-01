@@ -8,6 +8,8 @@
  */
 
 import type {
+  ConfigureProgramInput,
+  EmbedTokenInput,
   EnrollInput,
   IngestEventInput,
   IngestEventResult,
@@ -15,6 +17,7 @@ import type {
   MembershipView,
   RedeemInput,
   RedeemResult,
+  UpsertMerchantInput,
 } from "./types.js";
 
 export class LoyaltyError extends Error {
@@ -201,5 +204,63 @@ export class LoyaltyClient {
     membership: MembershipRef,
   ): Promise<{ saveUrl: string; classRegistered: boolean }> {
     return this.request("POST", "/v1/passes", { merchant, membership });
+  }
+
+  // -------------------------------------------------------------------------
+  // Activación del módulo
+  //
+  // Lo que corre cuando un comercio enciende Fidelización dentro de tu producto.
+  // Va una vez por comercio y es idempotente: se puede llamar en cada arranque
+  // sin revisar si ya existe.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Da de alta el comercio, o actualiza sus datos si ya estaba.
+   *
+   * La clave es `externalId`: el id que ese comercio tiene **en tu producto**.
+   * Loyalty no lo interpreta, solo lo usa para reconocerlo, así que reenviar el
+   * alta cuando cambia el nombre del local es la forma normal de mantenerlo al
+   * día.
+   *
+   * `legalName` es la razón social y aparece en el dorso del pase, en la
+   * atribución que exige el mandato con el que Sophos firma; `displayName` es lo
+   * que el cliente ve en la cara de la tarjeta.
+   *
+   * **El `slug` no se puede cambiar después.** Está adentro del Pass Type ID de
+   * Apple y del id de clase de Google: cambiarlo huerfanaría todos los pases ya
+   * emitidos. Si mandás uno distinto al del alta, la respuesta trae el guardado
+   * y no el que mandaste — comparalos si te importa.
+   */
+  upsertMerchant(
+    input: UpsertMerchantInput,
+  ): Promise<{ id: string; externalId: string; slug: string }> {
+    return this.request("POST", "/v1/merchants", input);
+  }
+
+  /**
+   * Crea o reemplaza el programa del comercio.
+   *
+   * **Reemplaza, no combina.** Mandar solo las reglas nuevas borra el resto de
+   * la configuración —topes, vencimiento, horarios— sin avisar. Si el comercio
+   * ya configuró cosas desde la consola, esto no se llama de nuevo: se llama una
+   * vez al activar, con un preset, y a partir de ahí manda la consola.
+   */
+  configureProgram(input: ConfigureProgramInput): Promise<{ id: string }> {
+    return this.request("PUT", "/v1/programs", input);
+  }
+
+  /**
+   * Token para embeber la consola del comercio dentro de tu producto.
+   *
+   * Es lo que hace que el comercio configure todo sin salir de tu UI. Dura una
+   * hora y está atado a **ese** comercio: los endpoints de la consola ignoran
+   * cualquier `merchant` que venga en el request, así que no hay forma de
+   * alcanzar los datos de otro editando la URL.
+   *
+   * Se pide **desde tu backend**, nunca desde el navegador: el access token de
+   * producto no puede salir del servidor.
+   */
+  createEmbedToken(input: EmbedTokenInput): Promise<{ token: string; expiresIn: number }> {
+    return this.request("POST", "/v1/embed-tokens", input);
   }
 }

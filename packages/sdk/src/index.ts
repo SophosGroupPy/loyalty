@@ -16,6 +16,9 @@ export {
 } from "./signature.js";
 
 export type {
+  ConfigureProgramInput,
+  EmbedTokenInput,
+  UpsertMerchantInput,
   AvailableReward,
   BalanceChangedData,
   BusinessEventType,

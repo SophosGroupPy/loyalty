@@ -32,7 +32,80 @@ Sophos en ningún momento.
 
 ---
 
-## 1. Emitir eventos
+## 1. Activar el módulo para un comercio
+
+Esto corre **una vez**, cuando el comercio enciende Fidelización desde tu
+producto. Las tres llamadas son idempotentes: se pueden repetir en cada arranque
+sin revisar si ya existen.
+
+```ts
+import { LoyaltyClient } from "@sophos/loyalty-sdk";
+
+const loyalty = new LoyaltyClient({
+  baseUrl: process.env.LOYALTY_API_URL!,
+  clientId: process.env.LOYALTY_CLIENT_ID!,
+  clientSecret: process.env.LOYALTY_CLIENT_SECRET!,
+});
+
+// 1. El comercio. `externalId` es su id EN TU PRODUCTO.
+await loyalty.upsertMerchant({
+  externalId: String(restaurante.id),
+  slug: restaurante.slug,
+  legalName: restaurante.razonSocial,
+  displayName: restaurante.nombre,
+});
+
+// 2. Un programa inicial. Después lo edita el comercio desde la consola.
+await loyalty.configureProgram({
+  merchant: String(restaurante.id),
+  kind: "points",
+  config: { earn: [{ on: "order.paid", rate: { per: 10_000, points: 1 } }] },
+});
+```
+
+### Tres cosas que conviene saber antes
+
+**El `slug` no se puede cambiar.** Está adentro del Pass Type ID de Apple
+(`pass.com.sophosgroup.l.{slug}`) y del id de clase de Google. Cambiarlo dejaría
+huérfanos todos los pases ya emitidos, así que el `upsertMerchant` lo ignora en
+las llamadas siguientes y **devuelve el guardado**. Si te importa saber que tu
+cambio no se aplicó, comparalo con el que mandaste.
+
+**`configureProgram` reemplaza, no combina.** Mandar solo las reglas nuevas borra
+topes, vencimiento y horarios sin avisar. Llamalo una vez al activar, con un
+preset; de ahí en adelante manda la consola. Si lo llamás de nuevo más tarde,
+vas a pisar lo que el comercio configuró.
+
+**`externalId` es tuyo y no colisiona con otros productos.** ElMenu y Noctu
+pueden tener los dos un comercio con id `1`: son comercios distintos, con bases
+de clientes distintas.
+
+## 2. Darle la consola al comercio
+
+Es lo que hace que el comercio configure **todo** —programa, beneficios, diseño
+de la tarjeta, sucursales, notificaciones, campañas— sin salir de tu producto y
+sin que ustedes construyan ninguna pantalla.
+
+```ts
+// En tu backend. El access token de producto no puede salir del servidor.
+const { token } = await loyalty.createEmbedToken({
+  merchant: String(restaurante.id),
+  staffId: String(usuario.id),
+});
+```
+
+```html
+<iframe src="https://consola.sophosgroup.com.py/embed?token=TOKEN"></iframe>
+```
+
+El token dura una hora y está atado a **ese** comercio: los endpoints de la
+consola ignoran cualquier `merchant` que venga en el request, así que no hay
+forma de que un comercio alcance los datos de otro editando la URL.
+
+Avisale a Sophos el dominio desde el que vas a embeberla — está restringido por
+`frame-ancestors` y si no está en la lista, el iframe queda en blanco.
+
+## 3. Emitir eventos
 
 Cuando se cobra un pedido:
 
@@ -69,7 +142,7 @@ tuya.
 
 ---
 
-## 2. Consultar en el POS
+## 4. Consultar en el POS
 
 Cuando el cajero identifica al cliente:
 
@@ -115,7 +188,7 @@ if (!canje.ok && canje.reason === "insufficient_balance") {
 
 ---
 
-## 3. Recibir webhooks
+## 5. Recibir webhooks
 
 Registrás tu URL una vez:
 
@@ -193,26 +266,3 @@ cuenta como fallo y dispara reintentos.
 
 ---
 
-## Consola embebida
-
-Para que el comercio configure su programa sin salir de tu producto, pedí un
-token y embebé la consola:
-
-```ts
-const { token } = await fetch(`${API}/v1/embed-tokens`, {
-  method: "POST",
-  headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-  body: JSON.stringify({ merchant: restaurante.id, staffId: usuario.id }),
-}).then((r) => r.json());
-```
-
-```html
-<iframe src="https://consola.sophosgroup.com.py/embed?token=TOKEN"></iframe>
-```
-
-El token dura una hora y está atado a **ese** comercio: los endpoints ignoran
-cualquier `merchant` que venga en el request, así que no hay forma de que un
-comercio alcance los datos de otro editando la URL.
-
-Avisale a Sophos el dominio desde el que vas a embeberla — está restringido por
-`frame-ancestors` y si no está en la lista, el iframe queda en blanco.

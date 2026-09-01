@@ -154,3 +154,35 @@ export interface MembershipCreatedData {
   /** `true` si la persona ya existía en el ecosistema: el alta de un toque. */
   personExisted: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Activación del módulo
+// ---------------------------------------------------------------------------
+
+export interface UpsertMerchantInput {
+  /** El id del comercio **en tu producto**. Es la clave de identidad. */
+  externalId: string;
+  /** Identificador legible, para URLs y para el Pass Type ID de Apple. */
+  slug: string;
+  /** Razón social. Va en la atribución del dorso del pase. */
+  legalName: string;
+  /** Nombre comercial. Es lo que el cliente ve en la tarjeta. */
+  displayName: string;
+  /** IANA, por ejemplo "America/Asuncion". Por defecto, el de Paraguay. */
+  timezone?: string;
+}
+
+export interface ConfigureProgramInput {
+  /** `externalId` del comercio. */
+  merchant: string;
+  kind: "points" | "stamps";
+  /** Reemplaza la configuración entera. Ver la advertencia en `configureProgram`. */
+  config: Record<string, unknown>;
+}
+
+export interface EmbedTokenInput {
+  /** `externalId` del comercio. */
+  merchant: string;
+  /** Quién abrió la consola, para el audit log. Opcional. */
+  staffId?: string;
+}

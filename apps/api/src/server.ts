@@ -463,7 +463,13 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     const { externalId, slug, legalName, displayName, timezone } = parsed.data;
     const productId = request.claims!.productId;
 
-    const result = await rows<{ id: string; external_id: string }>(
+    // El slug NO se actualiza en el ON CONFLICT, y es deliberado: está adentro
+    // del Pass Type ID de Apple (pass.com.sophosgroup.l.SLUG) y del id de clase
+    // de Google. Cambiarlo huerfanaría todos los pases ya emitidos, que
+    // seguirían apuntando al identificador viejo. Se devuelve el slug guardado
+    // para que quien llama vea que el suyo no se aplicó, en vez de recibir un
+    // 200 y creer que sí.
+    const result = await rows<{ id: string; external_id: string; slug: string }>(
       db.drizzle,
       sql`INSERT INTO merchant
             (product_id, external_id, slug, legal_name, display_name, timezone)
@@ -473,10 +479,14 @@ export function createServer(opts: ServerOptions): FastifyInstance {
             SET legal_name = EXCLUDED.legal_name,
                 display_name = EXCLUDED.display_name,
                 timezone = EXCLUDED.timezone
-          RETURNING id, external_id`,
+          RETURNING id, external_id, slug`,
     );
 
-    return reply.code(200).send({ id: result[0]?.id, externalId: result[0]?.external_id });
+    return reply.code(200).send({
+      id: result[0]?.id,
+      externalId: result[0]?.external_id,
+      slug: result[0]?.slug,
+    });
   });
 
   const programBody = z.object({
