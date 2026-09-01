@@ -15,16 +15,18 @@
     "typecheck": "tsc --build --force",
     "check:google": "tsx scripts/check-google.ts",
     "patch:balance": "tsx scripts/patch-balance.ts",
-    "rename:class": "tsx scripts/rename-class.ts"
+    "rename:class": "tsx scripts/rename-class.ts",
+    "build": "node build.mjs",
+    "start": "node dist/index.js"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.4",
     "@sophos/db": "workspace:*",
     "@sophos/passes": "workspace:*",
     "@sophos/rules": "workspace:*",
-    "@electric-sql/pglite": "^0.5.4",
     "@types/node": "^22.10.2",
     "@types/pg": "^8.21.0",
-    "pg": "^8.23.0",
+    "esbuild": "^0.28.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
@@ -33,6 +35,9 @@
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.11.3",
     "jose": "^6.2.8",
+    "node-forge": "^1.4.0",
+    "pg": "^8.23.0",
+    "pngjs": "^7.0.0",
     "zod": "^4.4.3"
   }
 }

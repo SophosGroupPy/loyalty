@@ -173,7 +173,10 @@ en que lo busca, sin depender de ninguna notificación ni de ninguna wallet.
 
 ## Pendiente antes de producción
 
-- [ ] Reemplazar `tsx` por un build compilado para el runtime de producción.
+- [x] Build compilado para producción. `pnpm build` empaqueta con esbuild a
+      `dist/index.js` y copia las migraciones; `pnpm start` lo corre. El build
+      falla si una dependencia de ejecución no está declarada en la raíz — así
+      no se descubre al arrancar.
 - [x] Webhooks salientes firmados con HMAC. Ver `packages/sdk/src/signature.ts`:
       firmante y verificador comparten el módulo, para que no puedan discrepar.
 - [x] Vencimiento de puntos. `apps/api/src/expiry.ts`, expuesto en

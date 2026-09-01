@@ -6,6 +6,8 @@
  * pierde todo al reiniciar.
  */
 
+import { join } from "node:path";
+
 /**
  * Carga `.env.local` en desarrollo.
  *
@@ -16,7 +18,11 @@
  */
 if (process.env.NODE_ENV !== "production") {
   try {
-    process.loadEnvFile(new URL("../../../.env.local", import.meta.url).pathname);
+    // Relativo al directorio de trabajo y no a `import.meta.url`: el mismo
+    // archivo se ejecuta desde `apps/api/src/` con tsx y desde `dist/` ya
+    // compilado, y una ruta relativa al fuente apunta afuera del repo en el
+    // segundo caso — el servidor arrancaba diciendo que nada estaba configurado.
+    process.loadEnvFile(join(process.cwd(), ".env.local"));
   } catch {
     // No existe, y está bien: se corre con lo que haya en el entorno.
   }
