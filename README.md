@@ -19,13 +19,20 @@ Plan completo de arquitectura: `~/.claude/plans/estamos-desarrollando-un-program
 | 2 | Despachador de notificaciones: cupo, prioridad, agrupamiento, campañas | ✅ |
 | 2 | Alta con OTP, consola embebible | pendiente |
 | 3 | Integración con ElMenu y Noctu | pendiente |
-| 4 | Apple Wallet (bloqueada por el enrollment) | pendiente |
+| 4 | Apple Wallet | pendiente |
 
-**Google Wallet está construido y testeado, pero todavía no emitió una tarjeta
-real**: falta crear el Issuer. Sin credenciales, `/v1/passes` responde 503 y todo
-lo demás sigue funcionando igual. Antes de salir a producción hay que recorrer
+**Google Wallet quedó habilitado el 2026-08-13**: el Issuer existe
+(`3388000000023171859`), el publishing access está aprobado y la cuenta salió de
+demo mode — cualquiera puede guardar una tarjeta y desaparece el prefijo
+`[TEST ONLY]`. Falta emitir la primera tarjeta real contra ese Issuer. Sin
+credenciales cargadas, `/v1/passes` responde 503 y todo lo demás sigue
+funcionando igual. Antes de salir a producción hay que recorrer
 [docs/google-wallet-verificacion.md](docs/google-wallet-verificacion.md), que
 lista los valores que la documentación de Google define de forma contradictoria.
+
+**El enrollment de Apple está aprobado** desde el 2026-09-01, así que la fase 4
+ya no está bloqueada por trámite. El entitlement de NFC se pidió el mismo día y
+está en revisión, pero el v1 va con QR y no depende de él.
 
 ## Estructura
 
@@ -40,7 +47,7 @@ apps/api         API pública: OAuth2, ingesta, tarjetas, canjes, pases
 
 ```bash
 pnpm install
-pnpm test          # 50 tests
+pnpm test          # 197 casos en 12 archivos
 pnpm typecheck
 pnpm dev           # levanta la API en :4001
 ```
