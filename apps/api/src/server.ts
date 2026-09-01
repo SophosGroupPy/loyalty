@@ -17,6 +17,7 @@ import { rows, type Db } from "@sophos/db";
 
 import { runExpiry } from "./expiry.js";
 import {
+  markPassUpdated,
   passesUpdatedSince,
   registerDevice,
   unregisterDevice,
@@ -213,6 +214,14 @@ export function createServer(opts: ServerOptions): FastifyInstance {
   function syncPassInBackground(membershipId: string): void {
     void passes.syncGooglePass(membershipId).catch((error) => {
       app.log.error({ err: error, membershipId }, "falló la sincronización del pase");
+    });
+
+    // Apple funciona al revés: no se le empuja nada al pase, se marca que
+    // cambió y el iPhone viene a buscarlo cuando recibe el push. Marcarlo es
+    // barato y no depende de que Apple esté disponible; si no se marcara, el
+    // dispositivo nunca se enteraría de que el saldo cambió.
+    void markPassUpdated(db, membershipId).catch((error) => {
+      app.log.error({ err: error, membershipId }, "no se pudo marcar el pase de Apple");
     });
   }
 

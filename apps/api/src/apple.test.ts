@@ -64,7 +64,9 @@ async function seed() {
     const [program] = await rows<{ id: string }>(
       db.drizzle,
       sql`INSERT INTO program (merchant_id, kind, config, status)
-          VALUES (${merchants[slug]!}, 'points', ${JSON.stringify({ earn: [] })}::jsonb, 'active')
+          VALUES (${merchants[slug]!}, 'points',
+                  ${JSON.stringify({ earn: [{ on: "order.paid", rate: { per: 10_000, points: 1 } }] })}::jsonb,
+                  'active')
           RETURNING id`,
     );
     const [membership] = await rows<{ id: string }>(
@@ -347,5 +349,69 @@ describe("aislamiento del token de producto", () => {
       sql`SELECT membership_id FROM apple_device_registration`,
     );
     expect(found[0]?.membership_id).toBe(membershipId);
+  });
+});
+
+describe("el pase se marca como cambiado al acumular", () => {
+  /**
+   * `syncPassInBackground` no se espera a propósito —el cliente ya consumió y
+   * sus puntos le corresponden aunque la wallet esté caída— así que acá hay que
+   * esperar a que termine en vez de asumirlo.
+   */
+  async function esperarMarca(desde: number, intentos = 40): Promise<number> {
+    for (let i = 0; i < intentos; i++) {
+      const [row] = await rows<{ t: Date }>(
+        db.drizzle,
+        sql`SELECT content_updated_at AS t FROM pass_instance
+            WHERE membership_id = ${membershipId}`,
+      );
+      const t = new Date(row!.t).getTime();
+      if (t > desde) return t;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    return 0;
+  }
+
+  it("una acumulación deja el pase en la lista de cambios del dispositivo", async () => {
+    await register();
+
+    const [antes] = await rows<{ t: Date }>(
+      db.drizzle,
+      sql`SELECT content_updated_at AS t FROM pass_instance WHERE membership_id = ${membershipId}`,
+    );
+    const marcaPrevia = new Date(antes!.t).getTime();
+
+    const token = (
+      await app.inject({
+        method: "POST",
+        url: "/oauth/token",
+        payload: { grant_type: "client_credentials", client_id: "cid-elmenu", client_secret: "sec" },
+      })
+    ).json().access_token;
+
+    const evento = await app.inject({
+      method: "POST",
+      url: "/v1/events",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        merchant: "don-julio",
+        type: "order.paid",
+        idempotencyKey: "pedido-1",
+        membership: { serial: SERIAL },
+        amount: 50_000,
+      },
+    });
+    expect(evento.statusCode).toBe(201);
+
+    const marcaNueva = await esperarMarca(marcaPrevia);
+    expect(marcaNueva).toBeGreaterThan(marcaPrevia);
+
+    // Y lo que importa de verdad: el dispositivo lo ve como pendiente.
+    const res = await app.inject({
+      method: "GET",
+      url: `/apple/v1/devices/dev-1/registrations/${PASS_TYPE}?passesUpdatedSince=${marcaPrevia}`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().serialNumbers).toEqual([SERIAL]);
   });
 });
