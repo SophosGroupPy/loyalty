@@ -3,7 +3,7 @@
 import { useActionState } from "react";
 
 import type { CertificateRow } from "../../lib/admin";
-import { cargarCertificado } from "./actions";
+import { cargarCertificado, provisionar } from "./actions";
 
 /** Días que quedan, o `null` si no hay certificado. */
 function diasHasta(fecha: string | null): number | null {
@@ -23,6 +23,7 @@ function Estado({ fila }: { fila: CertificateRow }) {
 
 export function Certificados({ filas }: { filas: CertificateRow[] }) {
   const [state, action, pending] = useActionState(cargarCertificado, {});
+  const [alta, accionAlta, altaPendiente] = useActionState(provisionar, {});
 
   const sinCertificado = filas.filter((f) => !f.passTypeIdentifier);
 
@@ -75,13 +76,43 @@ export function Certificados({ filas }: { filas: CertificateRow[] }) {
       </table>
       </div>
 
-      <h3 style={{ marginTop: "2rem" }}>Cargar un certificado</h3>
+      <h3 style={{ marginTop: "2rem" }}>Dar de alta automáticamente</h3>
       <p className="cond">
-        El certificado sale del portal de Apple, a partir de un CSR generado
-        localmente. La clave privada se guarda cifrada y no vuelve a salir de
-        acá: esta pantalla nunca la muestra.
+        Registra el Pass Type ID en Apple, genera la clave y el certificado, y
+        los guarda cifrados — todo sin entrar al portal. La clave privada se
+        genera en el servidor y nunca pasa por el navegador. Sirve igual para
+        renovar: el identificador se reusa y solo se pide un certificado nuevo.
       </p>
 
+      <form action={accionAlta} className="composer">
+        <label>
+          Comercio
+          <select name="merchantId" required defaultValue="">
+            <option value="" disabled>
+              Elegí un comercio
+            </option>
+            {filas.map((fila) => (
+              <option key={fila.merchantId} value={fila.merchantId}>
+                {fila.merchantName} · {fila.productName}
+                {fila.passTypeIdentifier ? " (renovar)" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {alta?.error ? <p className="error">{alta.error}</p> : null}
+        {alta?.ok ? <p className="ok">{alta.ok}</p> : null}
+
+        <button type="submit" disabled={altaPendiente}>
+          {altaPendiente ? "Hablando con Apple…" : "Dar de alta en Apple"}
+        </button>
+      </form>
+
+      <h3 style={{ marginTop: "2rem" }}>Cargar un certificado a mano</h3>
+      <p className="cond">
+        Para el caso en que el certificado ya exista fuera del sistema. Lo normal
+        es usar el alta automática de arriba.
+      </p>
       <form action={action} className="composer">
         <label>
           Comercio

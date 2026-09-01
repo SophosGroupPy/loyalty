@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
-import { adminPut, clearSession, openSession, storeSession } from "../../lib/admin";
+import { adminPost, adminPut, clearSession, openSession, storeSession } from "../../lib/admin";
 
 /**
  * Login del back-office.
@@ -77,4 +77,31 @@ export async function cargarCertificado(
 
   revalidatePath("/admin/dashboard");
   return { ok: new Date(guardado.expiresAt).toLocaleDateString("es-PY") };
+}
+
+/**
+ * Da de alta el material de firma de un comercio contra la API de Apple.
+ *
+ * Reemplaza los seis pasos del portal. La clave privada se genera en el
+ * servidor y no pasa por el navegador en ningún momento.
+ */
+export async function provisionar(
+  _prev: { error?: string; ok?: string } | undefined,
+  formData: FormData,
+): Promise<{ error?: string; ok?: string }> {
+  const merchantId = String(formData.get("merchantId") ?? "");
+  if (!merchantId) return { error: "Elegí un comercio." };
+
+  const r = await adminPost<{ passTypeIdentifier: string; reused: boolean; expiresAt: string }>(
+    `/admin/merchants/${encodeURIComponent(merchantId)}/provision-pass`,
+  );
+
+  if (!r.ok) return { error: r.message };
+
+  revalidatePath("/admin/dashboard");
+  return {
+    ok:
+      `${r.data.passTypeIdentifier} — ${r.data.reused ? "identificador reusado" : "identificador nuevo"}, ` +
+      `certificado válido hasta el ${new Date(r.data.expiresAt).toLocaleDateString("es-PY")}.`,
+  };
 }

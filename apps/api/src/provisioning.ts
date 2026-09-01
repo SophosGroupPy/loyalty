@@ -24,6 +24,33 @@ import { createAscClient, passTypeIdFor, type AscConfig } from "@sophos/passes";
 
 import { storeCertificate } from "./apple.js";
 
+/**
+ * Pass Type IDs quemados: nunca hay que pedirle a Apple material nuevo para ellos.
+ *
+ * `don-julio` es el restaurante ficticio con el que se probó toda la capa de
+ * Apple, y su clave privada quedó expuesta el 2026-09-01. **Apple no permite
+ * revocar certificados de Pass Type ID** —ni por API ni por el portal, solo
+ * abriendo un caso con soporte— así que ese identificador queda comprometido
+ * para siempre: cualquiera con esa clave puede firmar pases a su nombre.
+ *
+ * El guard va acá y no en el alta de comercios porque un comercio llamado
+ * don-julio en una base de pruebas no hace daño; lo que no puede pasar es que
+ * un comercio real termine emitiendo tarjetas bajo ese identificador. Y va en
+ * código y no en un documento: dentro de seis meses nadie va a releer el
+ * documento.
+ */
+export const BURNED_PASS_TYPE_IDS = new Set(["pass.com.sophosgroup.l.don-julio"]);
+
+export class BurnedIdentifierError extends Error {
+  constructor(readonly passTypeIdentifier: string) {
+    super(
+      `${passTypeIdentifier} está comprometido y no se puede usar para un comercio real. ` +
+        "Su clave privada se filtró y Apple no permite revocar el certificado.",
+    );
+    this.name = "BurnedIdentifierError";
+  }
+}
+
 export interface ProvisionResult {
   passTypeIdentifier: string;
   /** `true` si el Pass Type ID ya existía y se reusó. */
@@ -67,6 +94,8 @@ export async function provisionPassCertificate(
 ): Promise<ProvisionResult> {
   const client = createAscClient(asc, fetchImpl);
   const identifier = passTypeIdFor(input.slug);
+
+  if (BURNED_PASS_TYPE_IDS.has(identifier)) throw new BurnedIdentifierError(identifier);
 
   const existente = await client.findPassTypeId(identifier);
   const passType =

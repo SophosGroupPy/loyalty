@@ -27,7 +27,11 @@ import {
   verifyPassAuth,
 } from "./apple.js";
 import { ascConfigFromEnv, createAppleIssuer } from "./apple-pass.js";
-import { merchantForProvisioning, provisionPassCertificate } from "./provisioning.js";
+import {
+  BurnedIdentifierError,
+  merchantForProvisioning,
+  provisionPassCertificate,
+} from "./provisioning.js";
 import { createApnsClient, pushPassUpdate, type ApnsClient } from "./apns.js";
 import { createRateLimiter } from "./rate-limit.js";
 import { AscError } from "@sophos/passes";
@@ -499,6 +503,7 @@ export function createServer(opts: ServerOptions): FastifyInstance {
 
     const { externalId, slug, legalName, displayName, timezone } = parsed.data;
     const productId = request.claims!.productId;
+
 
     // El slug NO se actualiza en el ON CONFLICT, y es deliberado: está adentro
     // del Pass Type ID de Apple (pass.com.sophosgroup.l.SLUG) y del id de clase
@@ -1441,6 +1446,9 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     } catch (error) {
       // El detalle de Apple es lo único que distingue "ya existe" de "no tenés
       // permiso"; tragarlo dejaría al operador sin ninguna pista.
+      if (error instanceof BurnedIdentifierError) {
+        return reply.code(409).send({ error: "burned_identifier", message: error.message });
+      }
       if (error instanceof AscError) {
         return reply
           .code(502)

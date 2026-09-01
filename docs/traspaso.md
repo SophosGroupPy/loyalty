@@ -39,7 +39,24 @@ Todo esto cambió después de que se escribieron los documentos del repo.
 | Clase `don-julio` | **Publicada** | Era la clase de prueba de un restaurante ficticio. Al conceder el publishing access, Google publicó automáticamente toda clase en Active. Hoy figura `APPROVED`. |
 | Infraestructura Railway | **Sin resolver** | Pospuesto desde el 2026-08-13. El proyecto creado por error en la cuenta personal ya fue borrado. |
 
-### Sobre `don-julio`
+### `don-julio` está quemado
+
+Es el restaurante ficticio con el que se probó toda la capa de Apple. Su clave
+privada de firma quedó expuesta el 2026-09-01, y como **Apple no permite revocar
+certificados de Pass Type ID**, ese identificador queda comprometido para
+siempre: cualquiera con esa clave puede firmar pases a su nombre.
+
+El daño real es nulo —el comercio no existe y la clave no sirve para ningún
+otro— pero el identificador **no puede usarse nunca para un comercio real**. Eso
+está impuesto en código, no en este documento: `BURNED_PASS_TYPE_IDS` en
+`apps/api/src/provisioning.ts` corta el alta antes de hablar con Apple, y el
+back-office muestra el motivo.
+
+El guard va en el provisioning y no en el alta de comercios a propósito: un
+comercio llamado don-julio en una base de pruebas no hace daño, y ponerlo ahí
+habría roto 109 tests sin ganar seguridad.
+
+### Sobre la clase `don-julio` de Google
 
 La consola **no ofrece archivar ni eliminar** una clase: el desplegable de
 Status solo tiene `DRAFT` y `UNDER_REVIEW`. Peor, el formulario de edición

@@ -23,7 +23,7 @@ import { createTestDb, rows, type Db } from "@sophos/db";
 import { AscError, createAscClient, derToPem } from "@sophos/passes";
 
 import { loadSigningMaterial } from "./apple.js";
-import { generateCsr, provisionPassCertificate } from "./provisioning.js";
+import { BurnedIdentifierError, generateCsr, provisionPassCertificate } from "./provisioning.js";
 import { encryptionKeyFrom } from "./secrets.js";
 
 let db: Db;
@@ -63,7 +63,7 @@ function apple(opts: { existente?: boolean } = {}) {
     if (path.startsWith("/passTypeIds") && (init?.method ?? "GET") === "GET") {
       return Response.json({
         data: opts.existente
-          ? [{ id: "YAEXISTIA", attributes: { identifier: "pass.com.sophosgroup.l.don-julio", name: "x" } }]
+          ? [{ id: "YAEXISTIA", attributes: { identifier: "pass.com.sophosgroup.l.la-vecina", name: "x" } }]
           : [],
       });
     }
@@ -100,7 +100,7 @@ beforeEach(async () => {
     sql`INSERT INTO product (slug,name,client_id,client_secret_hash) VALUES ('elmenu','ElMenu','c','h') RETURNING id`);
   const [m] = await rows<{ id: string }>(db.drizzle,
     sql`INSERT INTO merchant (product_id,external_id,slug,legal_name,display_name)
-        VALUES (${p!.id},'r-1','don-julio','Don Julio SA','Don Julio') RETURNING id`);
+        VALUES (${p!.id},'r-1','la-vecina','La Vecina SRL','La Vecina') RETURNING id`);
   merchantId = m!.id;
 });
 
@@ -110,12 +110,12 @@ afterEach(async () => { await db.close(); });
 
 describe("el CSR", () => {
   it("openssl lo lee y su firma verifica", () => {
-    const { csrPem } = generateCsr("Sophos Loyalty Don Julio");
+    const { csrPem } = generateCsr("Sophos Loyalty La Vecina");
     const dir = mkdtempSync(join(tmpdir(), "csr-"));
     writeFileSync(join(dir, "r.csr"), csrPem);
 
     const subject = execFileSync("openssl", ["req", "-in", join(dir, "r.csr"), "-noout", "-subject"], { encoding: "utf8" });
-    expect(subject).toContain("Sophos Loyalty Don Julio");
+    expect(subject).toContain("Sophos Loyalty La Vecina");
 
     const verify = execFileSync("openssl", ["req", "-in", join(dir, "r.csr"), "-noout", "-verify"], {
       encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
@@ -158,10 +158,10 @@ describe("provisionar un comercio", () => {
     const { fetchImpl, llamadas } = apple();
 
     const r = await provisionPassCertificate(
-      db, { merchantId, slug: "don-julio", displayName: "Don Julio" }, asc, clave, fetchImpl,
+      db, { merchantId, slug: "la-vecina", displayName: "La Vecina" }, asc, clave, fetchImpl,
     );
 
-    expect(r.passTypeIdentifier).toBe("pass.com.sophosgroup.l.don-julio");
+    expect(r.passTypeIdentifier).toBe("pass.com.sophosgroup.l.la-vecina");
     expect(r.reused).toBe(false);
     expect(llamadas.some((l) => l.method === "POST" && l.path === "/passTypeIds")).toBe(true);
     expect(llamadas.some((l) => l.method === "POST" && l.path === "/certificates")).toBe(true);
@@ -183,11 +183,29 @@ describe("provisionar un comercio", () => {
     const { fetchImpl, llamadas } = apple({ existente: true });
 
     const r = await provisionPassCertificate(
-      db, { merchantId, slug: "don-julio", displayName: "Don Julio" }, asc, clave, fetchImpl,
+      db, { merchantId, slug: "la-vecina", displayName: "La Vecina" }, asc, clave, fetchImpl,
     );
 
     expect(r.reused).toBe(true);
     expect(llamadas.filter((l) => l.method === "POST" && l.path === "/passTypeIds")).toHaveLength(0);
+  });
+});
+
+describe("identificadores quemados", () => {
+  it("no provisiona material nuevo para un Pass Type ID comprometido", async () => {
+    // don-julio se usó para probar toda la capa de Apple y su clave privada se
+    // filtró. Apple no deja revocar ese certificado, así que el identificador
+    // queda inutilizable: cualquiera con esa clave puede firmar a su nombre.
+    const { fetchImpl, llamadas } = apple();
+
+    await expect(
+      provisionPassCertificate(
+        db, { merchantId, slug: "don-julio", displayName: "Don Julio" }, asc, clave, fetchImpl,
+      ),
+    ).rejects.toBeInstanceOf(BurnedIdentifierError);
+
+    // Y no llega a hablar con Apple: se corta antes.
+    expect(llamadas).toHaveLength(0);
   });
 });
 

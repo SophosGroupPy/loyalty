@@ -136,3 +136,29 @@ export async function adminPut<T>(path: string, body: unknown): Promise<T | null
   });
   return response.ok ? ((await response.json()) as T) : null;
 }
+
+/** POST al back-office con la sesión guardada en la cookie. */
+export async function adminPost<T>(path: string): Promise<{ ok: true; data: T } | { ok: false; message: string }> {
+  const token = (await cookies()).get(COOKIE)?.value;
+  if (!token) return { ok: false, message: "Sesión vencida." };
+
+  const response = await fetch(`${API_URL}${path}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+
+  const body = (await response.json().catch(() => null)) as
+    | { message?: string; detail?: string }
+    | null;
+
+  if (!response.ok) {
+    // El detalle que devuelve Apple suele ser lo único que explica el rechazo;
+    // mostrar solo "falló" dejaría al operador sin nada.
+    return {
+      ok: false,
+      message: [body?.message, body?.detail].filter(Boolean).join(" ") || "No se pudo completar.",
+    };
+  }
+  return { ok: true, data: body as T };
+}
