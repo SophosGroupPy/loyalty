@@ -18,6 +18,7 @@ import forge from "node-forge";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createTestDb, rows, type Db } from "@sophos/db";
+import { solidPng } from "@sophos/passes";
 
 import { passAuthToken } from "./apple.js";
 import { hashSecret } from "./auth.js";
@@ -132,6 +133,45 @@ const cargarCertificado = () =>
     certificatePem: signer.certificatePem,
     privateKeyPem: signer.privateKeyPem,
   });
+
+/** Lista los archivos del `.pkpass` que devolvió la API. */
+function listar(res: { rawPayload: Buffer }): string {
+  const dir = mkdtempSync(join(tmpdir(), "pkpass-ls-"));
+  writeFileSync(join(dir, "p.pkpass"), res.rawPayload);
+  return execFileSync("unzip", ["-Z1", join(dir, "p.pkpass")], { encoding: "utf8" });
+}
+
+const conLogoUrl = () =>
+  rows(
+    db.drizzle,
+    sql`UPDATE merchant SET design = jsonb_set(COALESCE(design, '{}'::jsonb), '{logoUrl}',
+        '"https://ejemplo.com/logo.png"') WHERE id = ${merchantId}`,
+  );
+
+/** Levanta un servidor con un `fetch` controlado, para el logo. */
+async function conFetch(fetchImpl: typeof fetch) {
+  const server = createServer({
+    db,
+    signingKey: SIGNING_KEY,
+    adminKey: "admin-de-test",
+    fetchImpl,
+    appleWallet: {
+      teamIdentifier: "3W23SYPG6H",
+      webServiceURL: "https://tarjeta.sophosgroup.com.py",
+      encryptionKey: ENCRYPTION_KEY,
+      wwdrCertificatePem: wwdrPem,
+    },
+  });
+  await server.ready();
+
+  const res = await server.inject({
+    method: "GET",
+    url: `/apple/v1/passes/${PASS_TYPE}/${SERIAL}`,
+    headers: { authorization: `ApplePass ${passAuthToken(SERIAL, SIGNING_KEY)}` },
+  });
+  await server.close();
+  return res;
+}
 
 const pedirPase = (serial = SERIAL) =>
   app.inject({
@@ -294,6 +334,51 @@ describe("emisión del pase", () => {
     writeFileSync(join(dir, "p.pkpass"), res.rawPayload);
     const listado = execFileSync("unzip", ["-Z1", join(dir, "p.pkpass")], { encoding: "utf8" });
     expect(listado).toContain("icon.png");
+  });
+
+  it("usa el logo del comercio cuando se puede bajar", async () => {
+    await cargarCertificado();
+    await rows(
+      db.drizzle,
+      sql`UPDATE merchant SET design = jsonb_set(COALESCE(design, '{}'::jsonb), '{logoUrl}',
+          '"https://ejemplo.com/logo.png"') WHERE id = ${merchantId}`,
+    );
+
+    const res = await conFetch(async () => new Response(solidPng(120, "#00FF00"), { status: 200 }));
+    const listado = listar(res);
+    expect(listado).toContain("logo.png");
+  });
+
+  it("cae al ícono de respaldo si el logo pesa demasiado", async () => {
+    // El pase se rebaja entero en cada cambio de saldo: su peso es tráfico
+    // recurrente. Un logo enorme lo volvería inusable sin que nadie lo note.
+    await cargarCertificado();
+    await conLogoUrl();
+
+    const gigante = Buffer.alloc(600 * 1024, 0);
+    solidPng(8, "#FF0000").copy(gigante); // arranca como PNG válido
+    const res = await conFetch(async () => new Response(gigante, { status: 200 }));
+
+    expect(listar(res)).not.toContain("logo.png");
+    expect(listar(res)).toContain("icon.png");
+  });
+
+  it("cae al ícono de respaldo si el archivo no es PNG", async () => {
+    // Apple solo acepta PNG. Un JPG renombrado se agrega igual al zip y el pase
+    // se rechaza en el teléfono sin explicación.
+    await cargarCertificado();
+    await conLogoUrl();
+
+    const res = await conFetch(async () => new Response(Buffer.from("no soy un png"), { status: 200 }));
+    expect(listar(res)).not.toContain("logo.png");
+  });
+
+  it("cae al ícono de respaldo si la URL del logo no responde", async () => {
+    await cargarCertificado();
+    await conLogoUrl();
+
+    const res = await conFetch(async () => { throw new Error("sin red"); });
+    expect(listar(res)).toContain("icon.png");
   });
 
   it("404 para un serial de otro comercio", async () => {

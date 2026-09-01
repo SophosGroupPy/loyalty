@@ -58,6 +58,20 @@ export interface AppleIssuerOptions {
   fetchImpl?: typeof fetch;
 }
 
+/**
+ * Tope del logo que se baja del comercio.
+ *
+ * El pase entero se descarga en el teléfono cada vez que cambia el saldo, así
+ * que su peso es tráfico recurrente, no un costo de una sola vez. Un logo de
+ * 5 MB haría un `.pkpass` de 5 MB que se rebaja en cada acumulación.
+ *
+ * 512 KB es holgado para un PNG de logo bien exportado y corta el caso patológico
+ * del comercio que sube la foto de su cartel. Todavía no redimensionamos: cuando
+ * la consola valide el tamaño al subirlo, este tope pasa a ser la última defensa
+ * y no la única.
+ */
+const MAX_LOGO_BYTES = 512 * 1024;
+
 export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer {
   const enabled = Boolean(opts.encryptionKey && opts.wwdrCertificatePem);
   const fetchImpl = opts.fetchImpl ?? fetch;
@@ -82,6 +96,11 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
       if (!response.ok) return { images: { "icon.png": icono }, fallback: true };
 
       const logo = Buffer.from(await response.arrayBuffer());
+
+      if (logo.length > MAX_LOGO_BYTES) {
+        return { images: { "icon.png": icono }, fallback: true };
+      }
+
       if (!isPng(logo)) {
         // Apple solo acepta PNG. Un JPG con nombre .png se agrega igual al zip
         // y el pase se rechaza en el teléfono sin explicación.
