@@ -1,6 +1,8 @@
 import { redirect } from "next/navigation";
 
+import { Certificados } from "../certificados";
 import {
+  fetchCertificates,
   fetchHealth,
   fetchMerchants,
   fetchOverview,
@@ -15,6 +17,7 @@ const TABS = [
   { id: "resumen", label: "Resumen" },
   { id: "salud", label: "Salud" },
   { id: "comercios", label: "Comercios" },
+  { id: "wallet", label: "Wallet" },
 ] as const;
 
 export default async function Dashboard({
@@ -148,6 +151,7 @@ export default async function Dashboard({
 
       {tab === "salud" ? <Salud /> : null}
       {tab === "comercios" ? <Comercios /> : null}
+      {tab === "wallet" ? <Wallet /> : null}
     </main>
   );
 }
@@ -263,4 +267,18 @@ async function Comercios() {
       ) : null}
     </section>
   );
+}
+
+/**
+ * Material de firma de Apple.
+ *
+ * Vive en el back-office y no en la consola del comercio: quien carga un
+ * certificado puede emitir pases en nombre de ese comercio, así que es una
+ * operación de Sophos y no algo que el comercio manipule.
+ */
+async function Wallet() {
+  const data = await fetchCertificates();
+  if (!data) return <p className="cond">No se pudo leer el estado de los certificados.</p>;
+
+  return <Certificados filas={data.certificates} />;
 }

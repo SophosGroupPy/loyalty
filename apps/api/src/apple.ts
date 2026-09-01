@@ -320,6 +320,51 @@ export async function loadSigningMaterial(
   };
 }
 
+export interface CertificateRow {
+  merchantId: string;
+  merchantName: string;
+  slug: string;
+  productName: string;
+  passTypeIdentifier: string | null;
+  expiresAt: Date | null;
+}
+
+/**
+ * Estado del material de firma de **todos** los comercios, tengan certificado o
+ * no.
+ *
+ * Se listan también los que no tienen: son los que no pueden emitir en iPhone, y
+ * un listado que solo muestre los cargados esconde justamente el problema.
+ */
+export async function certificateStatus(db: Db): Promise<CertificateRow[]> {
+  const found = await rows<{
+    merchant_id: string;
+    merchant_name: string;
+    slug: string;
+    product_name: string;
+    pass_type_identifier: string | null;
+    expires_at: Date | null;
+  }>(
+    db.drizzle,
+    sql`SELECT m.id AS merchant_id, m.display_name AS merchant_name, m.slug,
+               p.name AS product_name,
+               c.pass_type_identifier, c.expires_at
+        FROM merchant m
+        JOIN product p ON p.id = m.product_id
+        LEFT JOIN pass_certificate c ON c.merchant_id = m.id
+        ORDER BY c.expires_at NULLS FIRST, p.name, m.display_name`,
+  );
+
+  return found.map((r) => ({
+    merchantId: r.merchant_id,
+    merchantName: r.merchant_name,
+    slug: r.slug,
+    productName: r.product_name,
+    passTypeIdentifier: r.pass_type_identifier,
+    expiresAt: r.expires_at ? new Date(r.expires_at) : null,
+  }));
+}
+
 /** Certificados que vencen pronto. Un pase con el certificado vencido no se actualiza. */
 export async function expiringCertificates(
   db: Db,

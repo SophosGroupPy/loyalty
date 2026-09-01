@@ -247,6 +247,23 @@ describe("carga del certificado", () => {
     expect(todos).toHaveLength(1);
   });
 
+  it("lista también los comercios que todavía no tienen certificado", async () => {
+    // Un listado que solo muestre los cargados esconde justamente el problema:
+    // los comercios que no pueden emitir en iPhone.
+    const antes = await admin("GET", "/admin/pass-certificates");
+    expect(antes.json().certificates).toHaveLength(1);
+    expect(antes.json().certificates[0]).toMatchObject({
+      merchantName: "Don Julio",
+      productName: "ElMenu",
+      passTypeIdentifier: null,
+    });
+
+    await cargarCertificado();
+
+    const despues = await admin("GET", "/admin/pass-certificates");
+    expect(despues.json().certificates[0].passTypeIdentifier).toBe(PASS_TYPE);
+  });
+
   it("avisa de los certificados por vencer", async () => {
     await cargarCertificado();
 

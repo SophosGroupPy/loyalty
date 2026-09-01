@@ -109,3 +109,30 @@ export const fetchOverview = () =>
 export const fetchHealth = () => get<Health>("/admin/health");
 
 export const fetchMerchants = () => get<{ merchants: MerchantRow[] }>("/admin/merchants");
+
+export interface CertificateRow {
+  merchantId: string;
+  merchantName: string;
+  slug: string;
+  productName: string;
+  /** `null` cuando ese comercio todavía no puede emitir en iPhone. */
+  passTypeIdentifier: string | null;
+  expiresAt: string | null;
+}
+
+export const fetchCertificates = () =>
+  get<{ certificates: CertificateRow[] }>("/admin/pass-certificates");
+
+/** Escribe en el back-office con la sesión guardada en la cookie. */
+export async function adminPut<T>(path: string, body: unknown): Promise<T | null> {
+  const token = (await cookies()).get(COOKIE)?.value;
+  if (!token) return null;
+
+  const response = await fetch(`${API_URL}${path}`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  return response.ok ? ((await response.json()) as T) : null;
+}

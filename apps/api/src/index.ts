@@ -6,8 +6,25 @@
  * pierde todo al reiniciar.
  */
 
+/**
+ * Carga `.env.local` en desarrollo.
+ *
+ * Sin esto ninguna credencial llegaba al proceso: el archivo existía, tenía las
+ * claves de Google adentro, y el servidor arrancaba diciendo que Google no
+ * estaba configurado. En producción las variables las pone el entorno y este
+ * archivo no existe, así que se ignora en silencio.
+ */
+if (process.env.NODE_ENV !== "production") {
+  try {
+    process.loadEnvFile(new URL("../../../.env.local", import.meta.url).pathname);
+  } catch {
+    // No existe, y está bien: se corre con lo que haya en el entorno.
+  }
+}
+
 import { createDb, runMigrations } from "@sophos/db";
 
+import { appleWalletConfigFromEnv } from "./apple-pass.js";
 import { googleWalletConfigFromEnv } from "./passes.js";
 import { createServer } from "./server.js";
 
@@ -65,11 +82,32 @@ if (!googleWallet) {
   );
 }
 
+const appleWallet = appleWalletConfigFromEnv();
+if (!appleWallet) {
+  console.warn(
+    "[loyalty] Apple Wallet sin configurar: se pueden registrar dispositivos " +
+      "pero no emitir pases. Falta APPLE_TEAM_ID o APPLE_WEB_SERVICE_URL.",
+  );
+} else if (!appleWallet.encryptionKey || !appleWallet.wwdrCertificatePem) {
+  // El registro de dispositivos funciona sin esto; la emisión no. Se avisa
+  // distinto del caso anterior porque el síntoma es otro: el pase se pide y
+  // responde 503, en vez de no existir la ruta.
+  console.warn(
+    "[loyalty] Apple Wallet a medias: /apple/v1/passes responde 503. " +
+      "Falta APPLE_PASS_ENCRYPTION_KEY o APPLE_WWDR_PEM.",
+  );
+}
+
+if (!process.env.ADMIN_API_KEY) {
+  console.warn("[loyalty] Back-office deshabilitado: falta ADMIN_API_KEY.");
+}
+
 const app = createServer({
   db,
   signingKey: requireSigningKey(),
   logger: true,
   ...(googleWallet ? { googleWallet } : {}),
+  ...(appleWallet ? { appleWallet } : {}),
 });
 
 const port = Number(process.env.PORT ?? 4001);

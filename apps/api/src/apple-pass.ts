@@ -192,3 +192,35 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
     },
   };
 }
+
+/**
+ * Configuración de Apple Wallet desde el entorno.
+ *
+ * Devuelve `null` si falta lo mínimo. Sin esto el servidor sigue funcionando
+ * entero: se registran dispositivos y se emite en Android, y solo la emisión
+ * de pases de iPhone responde 503 con motivo explícito.
+ */
+export function appleWalletConfigFromEnv(): {
+  teamIdentifier: string;
+  webServiceURL: string;
+  encryptionKey?: string;
+  wwdrCertificatePem?: string;
+} | null {
+  const teamIdentifier = process.env.APPLE_TEAM_ID;
+  const webServiceURL = process.env.APPLE_WEB_SERVICE_URL;
+
+  if (!teamIdentifier || !webServiceURL) return null;
+
+  return {
+    teamIdentifier,
+    webServiceURL,
+    // Los `\n` escapados son lo que sale de copiar un PEM a una variable de
+    // entorno; se aceptan tal cual, igual que con la clave de Google.
+    ...(process.env.APPLE_WWDR_PEM
+      ? { wwdrCertificatePem: process.env.APPLE_WWDR_PEM.replace(/\\n/g, "\n") }
+      : {}),
+    ...(process.env.APPLE_PASS_ENCRYPTION_KEY
+      ? { encryptionKey: process.env.APPLE_PASS_ENCRYPTION_KEY }
+      : {}),
+  };
+}

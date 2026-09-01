@@ -17,6 +17,7 @@ import { rows, type Db } from "@sophos/db";
 
 import { runExpiry } from "./expiry.js";
 import {
+  certificateStatus,
   expiringCertificates,
   markPassUpdated,
   passesUpdatedSince,
@@ -1363,6 +1364,11 @@ export function createServer(opts: ServerOptions): FastifyInstance {
 
     const { membershipId } = request.params as { membershipId: string };
     return reply.send(await pushPassUpdate(db, membershipId, apns, encryptionKey, wwdr));
+  });
+
+  /** Estado del material de firma de todos los comercios, tengan o no. */
+  app.get("/admin/pass-certificates", async (_request, reply) => {
+    return reply.send({ certificates: await certificateStatus(db) });
   });
 
   /** Certificados por vencer. Un pase con el certificado vencido no se actualiza. */
