@@ -217,18 +217,18 @@ Después se completó la emisión y el aviso:
 
 ### Tamaño de los logos
 
-No se redimensiona nada. Con un logo de 1024x1024 y 166 KB, el `.pkpass` queda
-en **337 KB**, porque el mismo archivo se usa para el ícono de 29 puntos y para
-el logo. El pase se rebaja entero en cada cambio de saldo, así que ese peso es
-tráfico recurrente: con 500 clientes que consumen tres veces por semana son unos
-500 MB semanales para un solo comercio.
+**Resuelto.** El logo se reduce a las medidas de Apple al emitir el pase
+(`packages/passes/src/apple/resize.ts`). Con el mismo logo de 1024x1024, el
+`.pkpass` pasó de **337 KB a 12,8 KB**. Importa porque el pase se rebaja entero
+en cada cambio de saldo: ese peso es tráfico recurrente, no un costo único.
 
-Hay un tope de 512 KB al archivo que se baja, pero es la última defensa, no la
-solución. Lo que corresponde es redimensionar **al subir el logo en la consola**:
-se procesa una vez en vez de en cada emisión, el comercio ve al instante si su
-logo quedó mal, y se guardan las medidas que pide Apple (29, 58 y 87 px para el
-ícono; 160x50 para el logo). Requiere sumar una librería de imágenes, que hoy no
-existe en el proyecto.
+Queda un tope de 512 KB al archivo que se **descarga**, que sigue teniendo
+sentido: no conviene bajar 10 MB para después achicarlos.
+
+**Lo que falta afinar.** Se redimensiona en cada emisión y no se cachea el
+resultado. Con muchos pases del mismo comercio es trabajo repetido; cuando
+moleste, lo natural es guardar las dos imágenes ya reducidas junto al diseño del
+comercio y regenerarlas solo cuando cambie el `logoUrl`.
 
 ---
 

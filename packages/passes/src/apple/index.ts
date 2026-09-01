@@ -29,3 +29,6 @@ export type {
 } from "./types.js";
 
 export { isPng, solidPng } from "./png.js";
+
+export { appleImagesFrom, shrinkPng, ResizeError, APPLE_ICON_PX, APPLE_LOGO_PX } from "./resize.js";
+export type { AppleImages } from "./resize.js";

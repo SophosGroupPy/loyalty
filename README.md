@@ -187,7 +187,8 @@ en que lo busca, sin depender de ninguna notificación ni de ninguna wallet.
       comercio. El emisor de `.pkpass`, el web service y el envío por APNs ya
       están; el push no se pudo probar contra Apple porque hace falta un token
       real, que llega recién con el deploy.
-- [ ] Redimensionar los logos al subirlos en la consola. Ver `docs/traspaso.md`.
+- [x] Redimensionar los logos. `packages/passes/src/apple/resize.ts`, al emitir
+      el pase. Bajó el pase de 337 KB a 12,8 KB con el mismo logo de 1024x1024.
 
 **Ajustes manuales con PIN de staff: no va acá.** Estaba anotado como pendiente,
 pero loyalty no tiene modelo de usuarios — `redeemedBy` es un string que manda el

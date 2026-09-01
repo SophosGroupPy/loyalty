@@ -51,6 +51,11 @@ export {
   NEWS_FIELD_KEY,
   isPng,
   solidPng,
+  appleImagesFrom,
+  shrinkPng,
+  ResizeError,
+  APPLE_ICON_PX,
+  APPLE_LOGO_PX,
 } from "./apple/index.js";
 
 export type {

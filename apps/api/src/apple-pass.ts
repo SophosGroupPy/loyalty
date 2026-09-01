@@ -9,6 +9,7 @@ import { sql } from "drizzle-orm";
 
 import { rows, type Db } from "@sophos/db";
 import {
+  appleImagesFrom,
   buildPkpass,
   buildStoreCard,
   isPng,
@@ -107,7 +108,17 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
         return { images: { "icon.png": icono }, fallback: true };
       }
 
-      return { images: { "icon.png": logo, "logo.png": logo }, fallback: false };
+      // Se reduce a las medidas de Apple en vez de mandar el original. Un logo
+      // de 1024x1024 deja un pase de 337 KB que el teléfono rebaja entero en
+      // cada cambio de saldo.
+      try {
+        const { icon, logo: chico } = appleImagesFrom(logo);
+        return { images: { "icon.png": icon, "logo.png": chico }, fallback: false };
+      } catch {
+        // El PNG se leyó como PNG pero no se pudo decodificar. Es preferible el
+        // ícono genérico a un pase que iOS rechaza.
+        return { images: { "icon.png": icono }, fallback: true };
+      }
     } catch {
       return { images: { "icon.png": icono }, fallback: true };
     }
