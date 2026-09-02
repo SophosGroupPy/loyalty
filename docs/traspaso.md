@@ -249,13 +249,32 @@ La clave `.p8` **se descarga una sola vez** y no está en el repo. Ojo con el
 alcance: con rol Admin puede tocar toda la cuenta de desarrollador, no solo los
 pases.
 
-### Lo que sigue sin verificarse de Apple
+### Verificado en producción el 2026-09-02
+
+El ciclo completo de Apple, contra un iPhone real y `tarjeta.sophosgroup.com.py`:
+
+1. El servidor le pidió a Apple un Pass Type ID y un certificado, sin que nadie
+   entrara al portal.
+2. Emitió el `.pkpass` firmado con ese certificado.
+3. El iPhone lo agregó y se registró contra el web service (201).
+4. Se cambió el saldo y se disparó el push: APNs respondió
+   `{sent: 1, dropped: 0, failed: 0}`.
+5. El teléfono se despertó, preguntó con `passesUpdatedSince` **usando la marca
+   que le habíamos dado**, y volvió a bajar el pase.
+
+El paso 5 confirma además el arreglo de la precisión de milisegundos: con
+`timestamptz` por defecto, el dispositivo habría re-descargado el pase en cada
+despertar, para siempre.
+
+**`apns-push-type` se omite y funciona.** Era el valor que quedaba en duda; con
+el header ausente, APNs acepta el envío y el teléfono reacciona. Queda como está.
+
+### Lo que sigue sin verificarse
 
 | Qué | Por qué no se pudo |
 |---|---|
-| El push llega al teléfono | Necesita un push token real, y el dispositivo solo lo entrega cuando logra registrarse contra el web service — o sea, después del deploy |
-| El valor de `apns-push-type` | Hoy se omite el header, que es lo que hacen las implementaciones históricas. Está centralizado en `APNS_PUSH_TYPE`, como los literales de Google: si hay que cambiarlo, se cambia en un solo lugar |
 | La geocerca en iOS | Necesita estar cerca del local con el pase instalado |
+| El tope de 3 notificaciones por pase cada 24 h de Google | Requiere un Android real y repetir envíos |
 
 ### Tamaño de los logos
 
