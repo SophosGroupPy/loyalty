@@ -365,6 +365,70 @@ describe("back-office", () => {
     expect(merchants.map((m) => m.product).sort()).toEqual(["elmenu", "noctu"]);
   });
 
+  it("rota el secreto de un producto y mata el anterior", async () => {
+    const alta = await as(await adminToken())("POST", "/admin/products", {
+      slug: "eventtra",
+      name: "Eventtra",
+    });
+    const viejo = alta.json();
+
+    const rot = await as(await adminToken())(
+      "POST",
+      "/admin/products/eventtra/rotate-secret",
+    );
+    expect(rot.statusCode, rot.body).toBe(200);
+    const nuevo = rot.json();
+
+    // El client_id no cambia: identifica al producto en logs y rate limit.
+    expect(nuevo.clientId).toBe(viejo.clientId);
+    expect(nuevo.clientSecret).not.toBe(viejo.clientSecret);
+
+    // El nuevo entra…
+    const conNuevo = await app.inject({
+      method: "POST",
+      url: "/oauth/token",
+      payload: {
+        grant_type: "client_credentials",
+        client_id: nuevo.clientId,
+        client_secret: nuevo.clientSecret,
+      },
+    });
+    expect(conNuevo.statusCode).toBe(200);
+
+    // …y el viejo ya no. Es el punto entero de rotar: si el anterior siguiera
+    // sirviendo, filtrar un secreto sería irreparable sin borrar el producto.
+    const conViejo = await app.inject({
+      method: "POST",
+      url: "/oauth/token",
+      payload: {
+        grant_type: "client_credentials",
+        client_id: viejo.clientId,
+        client_secret: viejo.clientSecret,
+      },
+    });
+    expect(conViejo.statusCode).toBe(401);
+  });
+
+  it("rotar un producto que no existe es 404, no un alta silenciosa", async () => {
+    const res = await as(await adminToken())(
+      "POST",
+      "/admin/products/no-existe/rotate-secret",
+    );
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("rotar exige sesión de back-office", async () => {
+    await as(await adminToken())("POST", "/admin/products", {
+      slug: "eventtra",
+      name: "Eventtra",
+    });
+
+    // Con el token de un producto, que es lo más cerca que puede estar alguien
+    // que ya tiene credenciales del ecosistema.
+    const res = await as(elmenu)("POST", "/admin/products/eventtra/rotate-secret");
+    expect(res.statusCode).toBe(401);
+  });
+
   it("da de alta un producto y devuelve el secreto una sola vez", async () => {
     const res = await as(await adminToken())("POST", "/admin/products", {
       slug: "eventtra",

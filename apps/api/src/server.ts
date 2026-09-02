@@ -1421,6 +1421,55 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     });
   });
 
+  /**
+   * Rota el secreto de un producto integrador. Lo devuelve una sola vez.
+   *
+   * Hace falta por dos razones distintas. La operativa: el secreto se guarda
+   * hasheado y no hay forma de recuperarlo, así que si se pierde entre que la
+   * API lo devuelve y el integrador lo guarda, el producto queda inservible y
+   * sin el alta no se puede rehacer (el slug es único). La de seguridad: un
+   * secreto filtrado tiene que poder invalidarse sin borrar el producto y
+   * perder con él los comercios, las tarjetas y el ledger.
+   *
+   * El client_id NO cambia: identifica al producto en logs y en la tabla de
+   * rate limit, y rotarlo obligaría a tocar dos variables en vez de una.
+   *
+   * Los tokens ya emitidos siguen valiendo hasta que expiren — se validan
+   * contra la firma, no contra el secreto. Para un corte inmediato hay que
+   * rotar además JWT_SIGNING_KEY, que corta los de todos los productos.
+   */
+  app.post("/admin/products/:slug/rotate-secret", async (request, reply) => {
+    const parsed = z.object({ slug: z.string().min(2).max(40) })
+      .safeParse(request.params);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const clientSecret = randomBytes(32).toString("base64url");
+
+    const updated = await rows<{ id: string; client_id: string }>(
+      db.drizzle,
+      sql`UPDATE product
+             SET client_secret_hash = ${await hashSecret(clientSecret)}
+           WHERE slug = ${parsed.data.slug}
+       RETURNING id, client_id`,
+    );
+
+    const producto = updated[0];
+    if (!producto) {
+      return reply.code(404).send({
+        error: "not_found",
+        message: `No existe un producto con slug "${parsed.data.slug}".`,
+      });
+    }
+
+    return reply.send({
+      id: producto.id,
+      slug: parsed.data.slug,
+      clientId: producto.client_id,
+      // Una sola vez, igual que en el alta.
+      clientSecret,
+    });
+  });
+
   /** Corre el despachador de notificaciones de todo el ecosistema. */
   app.post("/admin/notifications/dispatch", async (_request, reply) => {
     return reply.send(await dispatchDue(db, sender));
