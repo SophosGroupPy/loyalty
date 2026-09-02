@@ -37,7 +37,8 @@ Todo esto cambió después de que se escribieron los documentos del repo.
 | Apple Developer Program | **Activo** | Membresía de organización desde el 2026-09-01. App Store Connect habilitado. Vendedor: `SOPHOS GROUP E.A.S.` |
 | Entitlement NFC de Apple | **En revisión** | Solicitado el 2026-09-01. Dos semanas o más, aprobación discrecional. Se declararon **0 terminales con Apple VAS desplegados**, que es la verdad. |
 | Clase `don-julio` | **Publicada** | Era la clase de prueba de un restaurante ficticio. Al conceder el publishing access, Google publicó automáticamente toda clase en Active. Hoy figura `APPROVED`. |
-| Infraestructura | **Fly.io** | Decidido el 2026-09-01: se descartó Railway porque el equipo ya tiene cuenta de Fly funcionando. `Dockerfile` y `fly.toml` están en el repo. |
+| Infraestructura | **Desplegado** | Fly.io, app `sophos-loyalty` en `gru` (São Paulo), 2 máquinas. https://sophos-loyalty.fly.dev |
+| Base de datos | **Neon** | Proyecto `sophos-loyalty` (id `soft-recipe-58331315`), base `loyalty`, región AWS `sa-east-1` (São Paulo) — la misma ciudad que la app. Cuenta de Sophos, no la personal. |
 
 ### `don-julio` está quemado
 
@@ -327,6 +328,17 @@ Cerrarla es irreversible en la práctica — renegociar con decenas de comercios
 ya firmados no pasa, y volver a pedir consentimiento a una base ya dada de alta
 tiene una tasa de respuesta miserable. Nada de esto se le promete al comercio
 ni al cliente final; es solo no cerrarse la opción.
+
+### Dónde vive cada cosa
+
+La app está en la organización **personal** de Fly (`fedeventre1@gmail.com`) y la
+base en la cuenta de **Sophos** en Neon. Es deliberado: lo sensible —celulares
+verificados, historial de consumo, claves de firma cifradas— quedó desde el
+día uno donde corresponde, y la app se mueve con `fly apps move` cuando haga
+falta, que es la parte fácil.
+
+**La región `eze` está deprecada en Fly.** El primer deploy falló por eso. `gru`
+resultó mejor de todos modos: es la misma ciudad que la base.
 
 ### El workspace de Fly
 

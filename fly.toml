@@ -3,7 +3,7 @@
 # El nombre de la app y la región se confirman al crearla con `fly launch`.
 
 app = "sophos-loyalty"
-primary_region = "eze"          # Ezeiza: la región más cercana a Asunción
+primary_region = "gru"          # São Paulo: la misma región que la base en Neon
 
 [build]
 
