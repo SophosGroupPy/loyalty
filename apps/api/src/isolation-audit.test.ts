@@ -109,6 +109,91 @@ afterEach(async () => {
   await db.close();
 });
 
+describe("referencia de comercio con forma de UUID", () => {
+  // Los productos reales identifican a sus comercios con UUID —el `business.id`
+  // de elMenú lo es— pero todos los demás tests usan external_id tipo "r-1", así
+  // que ninguno pasaba por acá. Resolver por forma en vez de por campo dejaba
+  // 403 a todos los comercios reales, en acumulación y en alta por igual.
+  const EXT = "3f2a8c1e-9b4d-4e77-88aa-1c2d3e4f5a6b";
+
+  it("resuelve por external_id aunque parezca un id interno", async () => {
+    const call = as(elmenu);
+    const alta = await call("POST", "/v1/merchants", {
+      externalId: EXT,
+      slug: "don-julio",
+      legalName: "Don Julio SA",
+      displayName: "Don Julio",
+    });
+    expect(alta.statusCode).toBe(200);
+
+    const prog = await call("PUT", "/v1/programs", {
+      merchant: EXT,
+      kind: "points",
+      config: { earn: [{ on: "order.paid", rate: { per: 10_000, points: 1 } }] },
+    });
+    expect(prog.statusCode).toBe(200);
+
+    const card = await call("POST", "/v1/memberships", {
+      merchant: EXT,
+      phone: "0993444444",
+      phoneVerified: true,
+    });
+    expect(card.statusCode).toBe(201);
+
+    const evento = await call("POST", "/v1/events", {
+      merchant: EXT,
+      idempotencyKey: "pedido-1",
+      type: "order.paid",
+      amount: 90_000,
+      membership: { id: card.json().membershipId },
+    });
+    expect(evento.statusCode).toBe(201);
+    expect(evento.json().balance).toBe(9);
+  });
+
+  it("el id interno sigue resolviendo", async () => {
+    const call = as(elmenu);
+    const alta = await call("POST", "/v1/merchants", {
+      externalId: EXT,
+      slug: "don-julio",
+      legalName: "Don Julio SA",
+      displayName: "Don Julio",
+    });
+
+    const prog = await call("PUT", "/v1/programs", {
+      merchant: alta.json().id,
+      kind: "points",
+      config: { earn: [{ on: "order.paid", rate: { per: 10_000, points: 1 } }] },
+    });
+    expect(prog.statusCode).toBe(200);
+  });
+
+  it("aceptar external_id no abre la puerta entre productos", async () => {
+    const alta = await as(elmenu)("POST", "/v1/merchants", {
+      externalId: EXT,
+      slug: "don-julio",
+      legalName: "Don Julio SA",
+      displayName: "Don Julio",
+    });
+
+    // Noctu con el external_id de un comercio de ElMenu en la mano…
+    const porExterno = await as(noctu)("PUT", "/v1/programs", {
+      merchant: EXT,
+      kind: "points",
+      config: { earn: [] },
+    });
+    expect(porExterno.statusCode).toBe(403);
+
+    // …y con el id interno exacto tampoco.
+    const porInterno = await as(noctu)("PUT", "/v1/programs", {
+      merchant: alta.json().id,
+      kind: "points",
+      config: { earn: [] },
+    });
+    expect(porInterno.statusCode).toBe(403);
+  });
+});
+
 describe("endpoints operativos", () => {
   it("pending-sync no expone tarjetas de otro producto", async () => {
     const mioElmenu = await seedProduct(elmenu, "r-1", "don-julio");

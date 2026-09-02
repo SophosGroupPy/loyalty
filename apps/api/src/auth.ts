@@ -258,9 +258,21 @@ export async function resolveMerchant(
     timezone: string;
   }>(
     db.drizzle,
+    // La referencia se busca SIEMPRE por `external_id` primero, y solo se
+    // prueba contra el id interno si además tiene forma de UUID.
+    //
+    // No alcanza con mirar la forma para decidir cuál de los dos es: que el id
+    // de un comercio dentro de su producto sea un UUID es lo normal —el de
+    // elMenú lo es— así que asumir "parece UUID, entonces es el id interno"
+    // dejaba sin resolver a todos ellos. El `ref` lo manda el backend del
+    // producto, que conoce sus propios ids: `external_id` es lo que espera, y
+    // por eso gana el empate.
     UUID_RE.test(ref)
       ? sql`SELECT id, external_id, slug, display_name, timezone FROM merchant
-            WHERE product_id = ${productId} AND id = ${ref}`
+            WHERE product_id = ${productId}
+              AND (external_id = ${ref} OR id = ${ref})
+            ORDER BY (external_id = ${ref}) DESC
+            LIMIT 1`
       : sql`SELECT id, external_id, slug, display_name, timezone FROM merchant
             WHERE product_id = ${productId} AND external_id = ${ref}`,
   );
