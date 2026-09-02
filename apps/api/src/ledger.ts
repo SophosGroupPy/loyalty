@@ -467,3 +467,185 @@ export async function auditAllBalances(
     computed: r.computed,
   }));
 }
+
+export interface ReverseEventInput {
+  productId: string;
+  merchantId: string;
+  /** La misma clave con la que se registró el consumo. */
+  idempotencyKey: string;
+  reason?: string;
+}
+
+export type ReverseEventOutput =
+  | {
+      status: "reversed";
+      ledgerEntryId: string;
+      /** Para que quien llama pueda sincronizar el pase sin volver a buscarla. */
+      membershipId: string;
+      /** Cuánto se pudo descontar de verdad. */
+      reversed: number;
+      /**
+       * Cuánto NO se pudo recuperar porque el cliente ya lo había canjeado.
+       *
+       * Se informa en vez de esconderse: es plata que el comercio entregó por
+       * un consumo que no existió, y tiene derecho a saberlo.
+       */
+      notRecovered: number;
+      balance: number;
+      tier: string | null;
+      /** `true` si ya se había revertido antes. */
+      duplicate: boolean;
+    }
+  | { status: "not_found" }
+  | { status: "nothing_to_reverse" };
+
+/**
+ * Deshace la acumulación de un consumo que se anuló, se invitó o no se entregó.
+ *
+ * **Es un asiento nuevo, no un borrado.** El ledger es append-only: la
+ * acumulación original queda, y encima va un `adjust` negativo. Así el historial
+ * sigue explicando qué pasó, que es lo que permite responder un reclamo.
+ *
+ * **Si el cliente ya gastó los puntos, se descuenta lo que haya y nada más.**
+ * No se puede des-tomar el café que ya se canjeó, y dejar el saldo en negativo
+ * violaría el invariante de la tarjeta además de ser incomprensible para el
+ * cliente. Lo que no se pudo recuperar se devuelve en `notRecovered` para que
+ * el comercio lo vea: es plata que entregó por un consumo que no existió.
+ *
+ * Idempotente por evento: revertir dos veces devuelve el primer resultado.
+ */
+export async function reverseEvent(
+  db: Db,
+  input: ReverseEventInput,
+): Promise<ReverseEventOutput> {
+  return db.drizzle.transaction(async (tx): Promise<ReverseEventOutput> => {
+    const eventos = await rows<{ id: string; membership_id: string | null }>(
+      tx,
+      sql`SELECT id, membership_id FROM event
+          WHERE product_id = ${input.productId}
+            AND idempotency_key = ${input.idempotencyKey}
+            AND merchant_id = ${input.merchantId}`,
+    );
+
+    const evento = eventos[0];
+    if (!evento || !evento.membership_id) return { status: "not_found" };
+
+    // El asiento original. Sin él no hubo acumulación que deshacer: pasa cuando
+    // el consumo no sumó puntos por el tope diario o por no llegar al mínimo.
+    const originales = await rows<{ id: string; amount: number }>(
+      tx,
+      sql`SELECT id, amount FROM ledger_entry
+          WHERE source_event_id = ${evento.id} AND kind = 'earn'`,
+    );
+
+    const original = originales[0];
+    if (!original) return { status: "nothing_to_reverse" };
+
+    const membresias = await rows<{
+      id: string;
+      merchant_id: string;
+      balance: number;
+      config: ProgramConfig;
+    }>(
+      tx,
+      sql`SELECT m.id, m.merchant_id, m.balance, p.config
+          FROM membership m JOIN program p ON p.id = m.program_id
+          WHERE m.id = ${evento.membership_id}`,
+    );
+
+    const membresia = membresias[0];
+    if (!membresia) return { status: "not_found" };
+
+    // Ya revertido: se devuelve lo que quedó, sin escribir de nuevo. La reversa
+    // puede reintentarse desde el producto de origen y no puede descontar dos
+    // veces.
+    //
+    // El vínculo con el evento va en `trace` y no en `source_event_id`: ese
+    // campo tiene un índice único —"un asiento por evento", la segunda línea de
+    // defensa de la idempotencia— y el asiento de acumulación ya lo ocupa. El
+    // propio trigger de append-only lo dice: "para revertir, insertá un asiento
+    // de ajuste".
+    const previas = await rows<{ id: string; amount: number }>(
+      tx,
+      sql`SELECT id, amount FROM ledger_entry
+          WHERE membership_id = ${evento.membership_id}
+            AND kind = 'adjust'
+            AND trace ->> 'reverses' = ${evento.id}`,
+    );
+
+    if (previas[0]) {
+      return {
+        status: "reversed",
+        ledgerEntryId: previas[0].id,
+        membershipId: membresia.id,
+        reversed: Math.abs(previas[0].amount),
+        notRecovered: original.amount - Math.abs(previas[0].amount),
+        balance: membresia.balance,
+        tier: tierFor(membresia.config, membresia.balance)?.name ?? null,
+        duplicate: true,
+      };
+    }
+
+    // Acá está la decisión: se descuenta lo que haya, no lo que se acreditó.
+    const aDescontar = Math.min(original.amount, membresia.balance);
+    const balanceAfter = membresia.balance - aDescontar;
+
+    if (aDescontar === 0) {
+      // El ledger rechaza asientos en cero, y con razón: un movimiento que no
+      // movió nada no es un movimiento. Se informa sin escribir.
+      return {
+        status: "reversed",
+        ledgerEntryId: "",
+        membershipId: membresia.id,
+        reversed: 0,
+        notRecovered: original.amount,
+        balance: membresia.balance,
+        tier: tierFor(membresia.config, membresia.balance)?.name ?? null,
+        duplicate: false,
+      };
+    }
+
+    const config = membresia.config;
+    const day = businessDay(
+      new Date(),
+      config.timezone ?? DEFAULT_TIMEZONE,
+      config.dayBoundaryHour ?? 0,
+    );
+
+    const asiento = await rows<{ id: string }>(
+      tx,
+      sql`INSERT INTO ledger_entry
+            (membership_id, merchant_id, kind, amount, balance_after,
+             business_day, source_event_id, reason, trace, actor)
+          VALUES (${membresia.id}, ${membresia.merchant_id}, 'adjust',
+                  ${-aDescontar}, ${balanceAfter}, ${day}, NULL,
+                  ${input.reason ?? "reversa del consumo"},
+                  ${JSON.stringify({
+                    reverses: evento.id,
+                    originalEntry: original.id,
+                    accrued: original.amount,
+                    notRecovered: original.amount - aDescontar,
+                  })}::jsonb, 'system')
+          RETURNING id`,
+    );
+
+    const tier = tierFor(config, balanceAfter);
+
+    await rows(
+      tx,
+      sql`UPDATE membership SET balance = ${balanceAfter}, tier = ${tier?.name ?? null}
+          WHERE id = ${membresia.id}`,
+    );
+
+    return {
+      status: "reversed",
+      ledgerEntryId: asiento[0]?.id ?? "",
+      membershipId: membresia.id,
+      reversed: aDescontar,
+      notRecovered: original.amount - aDescontar,
+      balance: balanceAfter,
+      tier: tier?.name ?? null,
+      duplicate: false,
+    };
+  });
+}

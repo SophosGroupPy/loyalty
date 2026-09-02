@@ -16,6 +16,7 @@ export {
 } from "./signature.js";
 
 export type {
+  ReverseEventResult,
   ConfigureProgramInput,
   EmbedTokenInput,
   UpsertMerchantInput,

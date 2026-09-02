@@ -186,3 +186,15 @@ export interface EmbedTokenInput {
   /** Quién abrió la consola, para el audit log. Opcional. */
   staffId?: string;
 }
+
+export interface ReverseEventResult {
+  /** Cuánto se pudo descontar de verdad. */
+  reversed: number;
+  /** Cuánto NO se recuperó porque el cliente ya lo había canjeado. */
+  notRecovered: number;
+  balance: number;
+  tier: string | null;
+  duplicate?: boolean;
+  /** `true` cuando el consumo nunca llegó a sumar puntos. No es un error. */
+  nothingToReverse?: boolean;
+}

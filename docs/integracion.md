@@ -142,6 +142,34 @@ tuya.
 
 ---
 
+### Deshacer un consumo
+
+Cuando un pedido se anula, se invita o no se entrega, los puntos que dejó tienen
+que volver:
+
+```ts
+const r = await loyalty.reverseEvent({
+  merchant: String(restaurante.id),
+  idempotencyKey: String(pedido.id),   // la misma del consumo
+  reason: "pedido anulado",
+})
+```
+
+Va con la **misma clave** del consumo: no hace falta guardar ningún id nuestro.
+
+**Si el cliente ya canjeó esos puntos, se descuenta lo que haya.** No se puede
+des-tomar el café, y dejar el saldo en negativo sería incomprensible para él. La
+respuesta trae `notRecovered` con lo que no se pudo recuperar — es plata que el
+comercio entregó por un consumo que no existió, y conviene mostrárselo.
+
+```json
+{ "reversed": 5, "notRecovered": 7, "balance": 0, "duplicate": false }
+```
+
+Es idempotente: reintentar devuelve el primer resultado con `duplicate: true`.
+Y si el consumo nunca llegó a sumar puntos —por el tope diario o por no alcanzar
+el mínimo— responde `nothingToReverse: true`, que no es un error.
+
 ## 4. Consultar en el POS
 
 Cuando el cajero identifica al cliente:

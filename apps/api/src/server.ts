@@ -56,7 +56,7 @@ import {
   type ResolvedMerchant,
   type TokenClaims,
 } from "./auth.js";
-import { applyEvent, auditAllBalances, redeem } from "./ledger.js";
+import { applyEvent, auditAllBalances, redeem, reverseEvent } from "./ledger.js";
 import { enroll, lookup, normalizePhone } from "./memberships.js";
 import {
   createConsoleOtpSender,
@@ -724,6 +724,59 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       phone: z.string().optional(),
     }),
     payload: z.record(z.string(), z.unknown()).optional(),
+  });
+
+  /**
+   * Deshace la acumulación de un consumo que se anuló, se invitó o no se
+   * entregó.
+   *
+   * Va con la misma `idempotencyKey` del consumo original: el producto de
+   * origen no tiene que recordar ningún id nuestro, le alcanza con el id de su
+   * propio pedido.
+   *
+   * Si el cliente ya canjeó esos puntos se descuenta lo que haya y la respuesta
+   * dice cuánto no se pudo recuperar. Esconderlo sería peor: es plata que el
+   * comercio entregó por un consumo que no existió.
+   */
+  app.post("/v1/events/reverse", async (request, reply) => {
+    const parsed = z
+      .object({
+        merchant: z.string().min(1),
+        idempotencyKey: z.string().min(1),
+        reason: z.string().max(200).optional(),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await withMerchant(request, reply, parsed.data.merchant);
+    if (!merchant) return;
+
+    const result = await reverseEvent(db, {
+      productId: request.claims!.productId,
+      merchantId: merchant.id,
+      idempotencyKey: parsed.data.idempotencyKey,
+      ...(parsed.data.reason ? { reason: parsed.data.reason } : {}),
+    });
+
+    if (result.status === "not_found") {
+      return reply.code(404).send({
+        error: "event_not_found",
+        message: "No hay un consumo con esa clave en este comercio.",
+      });
+    }
+
+    if (result.status === "nothing_to_reverse") {
+      // No es un error: pasa cuando el consumo no llegó a sumar puntos, por el
+      // tope diario o por no alcanzar el mínimo.
+      return reply.send({ reversed: 0, notRecovered: 0, nothingToReverse: true });
+    }
+
+    // El saldo cambió: la tarjeta tiene que reflejarlo. Como en la
+    // acumulación, no se espera — el saldo ya está bien en el ledger, y que la
+    // wallet esté caída no puede hacer fallar una reversa.
+    syncPassInBackground(result.membershipId);
+
+    return reply.send(result);
   });
 
   app.post("/v1/events", async (request, reply) => {

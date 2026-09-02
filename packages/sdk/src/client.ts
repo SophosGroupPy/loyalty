@@ -17,6 +17,7 @@ import type {
   MembershipView,
   RedeemInput,
   RedeemResult,
+  ReverseEventResult,
   UpsertMerchantInput,
 } from "./types.js";
 
@@ -154,6 +155,30 @@ export class LoyaltyClient {
    */
   ingestEvent(input: IngestEventInput): Promise<IngestEventResult> {
     return this.request<IngestEventResult>("POST", "/v1/events", input);
+  }
+
+  /**
+   * Deshace la acumulación de un consumo que se anuló, se invitó o no se
+   * entregó.
+   *
+   * Va con la misma `idempotencyKey` del consumo: no hace falta guardar ningún
+   * id de loyalty, alcanza con el id del pedido propio.
+   *
+   * **Si el cliente ya canjeó esos puntos, se descuenta lo que haya.** No se
+   * puede des-tomar el café, y dejar el saldo en negativo sería incomprensible
+   * para el cliente. La respuesta trae `notRecovered` con lo que no se pudo
+   * recuperar: es plata que el comercio entregó por un consumo que no existió,
+   * y tiene derecho a saberlo.
+   *
+   * Es idempotente: reintentar devuelve el primer resultado con
+   * `duplicate: true`.
+   */
+  reverseEvent(input: {
+    merchant: string;
+    idempotencyKey: string;
+    reason?: string;
+  }): Promise<ReverseEventResult> {
+    return this.request("POST", "/v1/events/reverse", input);
   }
 
   /**
