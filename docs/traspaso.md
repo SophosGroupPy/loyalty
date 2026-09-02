@@ -320,14 +320,18 @@ Ninguno se resuelve programando. El primero bloquea el traspaso mismo; los
 otros dos son más difíciles de revertir que cualquier decisión técnica de este
 proyecto.
 
-### El repo no tiene remoto
+### El repo — resuelto
 
-Al 2026-09-01 este repo tiene **26 commits y cero remotos configurados**. Todo
-el módulo existe únicamente en la laptop de Diego: sin GitHub, sin backup, y
-sin forma de entregárselo a nadie.
+**https://github.com/SophosGroupPy/loyalty**, privado.
 
-Esto bloquea el traspaso mismo, así que va antes que cualquier otra cosa. Un
-disco que falla se lleva tres semanas de trabajo y las ocho invariantes con él.
+Está bajo la cuenta `SophosGroupPy` y no bajo una organización: al publicarlo,
+esa cuenta no veía ninguna organización. Conviene transferirlo cuando se
+resuelva —GitHub conserva historial e issues y redirige la URL vieja— pero no
+bloquea nada.
+
+Se verificó antes de publicar que el historial completo no tuviera claves ni
+contraseñas: los únicos matches eran textos de ejemplo de un formulario y la
+línea que arma un PEM.
 
 ### Los dos textos legales
 
@@ -374,29 +378,19 @@ arrancar en el lugar correcto.
 
 Ordenado por lo que desbloquea a lo demás, no por dificultad.
 
-1. **Publicar el repo en un remoto.** Hoy no existe fuera de una máquina. Va a
-   una organización de GitHub de Sophos, no a una cuenta personal — mismo
-   criterio que la infraestructura y por la misma razón.
+1. **Integrar ElMenu y Noctu.** Es lo único grande que queda del producto. El
+   contrato está en `docs/integracion.md` y el SDK ya trae el flujo de
+   activación: `upsertMerchant`, `configureProgram` y `createEmbedToken`.
+   Requiere los repos de esos productos.
 
-2. **Desplegar en Fly.** Es lo único que hoy separa
-   a un módulo construido y testeado de un módulo que existe. Todo lo demás se
-   prueba mejor contra un entorno real.
+2. **Emitir la primera tarjeta real en Google Wallet.** El publishing access ya
+   está; la prueba de humo está en `docs/google-wallet-verificacion.md`.
 
-3. **Emitir la primera tarjeta real en Google Wallet.** El publishing access ya
-   está. La prueba de humo completa está en `docs/google-wallet-verificacion.md`.
-   Aprovechar para archivar `don-julio` por API en la misma pasada.
+3. **Los dos textos legales**, antes de firmar el primer comercio. Ver más
+   arriba.
 
-4. **Cerrar la fase 2: alta con OTP y consola embebible.** Es lo que falta para
-   que un comercio pueda operar solo, sin que nadie del equipo le cargue nada.
-
-5. **Integrar ElMenu y Noctu.** Fase 3. El contrato está escrito en
-   `docs/integracion.md`; no hay que diseñarlo de nuevo.
-
-6. **Apple Wallet con QR.** La membresía ya está activa, así que no hay nada
-   esperando. Seguir la especificación de la sección 3.
-
-7. **NFC, cuando y si Apple lo apruebe.** Depende del entitlement y de
-   terminales certificados. No condiciona nada de lo anterior.
+4. **NFC, cuando y si Apple lo apruebe.** Depende del entitlement y de
+   terminales certificados. No condiciona nada.
 
 En paralelo, la lista de **pendientes antes de producción** del README sigue
 vigente: build compilado en vez de `tsx`, webhooks firmados con HMAC, el job de
