@@ -68,15 +68,25 @@ export function createScheduler(db: Db, jobs: Job[], opts: SchedulerOptions = {}
    * Es atómico: si dos máquinas lo intentan a la vez, solo una ve la fila vieja
    * y solo una devuelve resultado. El intervalo mínimo va en el WHERE, así que
    * la coordinación y el ritmo se resuelven en la misma operación.
+   *
+   * El instante lo pone quien llama y no `now()` de Postgres. Con el reloj de la
+   * base la coordinación sería inmune a que dos máquinas tengan la hora
+   * corrida, pero el ritmo dejaría de ser verificable sin esperar horas reales.
+   * Las máquinas de Fly sincronizan por NTP, así que la diferencia es de
+   * milisegundos y la atomicidad —que es lo que evita el trabajo duplicado— no
+   * depende del reloj sino del UPDATE condicional.
    */
-  async function reclamar(job: string, intervaloMs: number): Promise<boolean> {
+  async function reclamar(job: string, intervaloMs: number, instante: number): Promise<boolean> {
+    const ahoraIso = new Date(instante).toISOString();
+    const desdeIso = new Date(instante - intervaloMs).toISOString();
+
     const tomado = await rows<{ name: string }>(
       db.drizzle,
       sql`INSERT INTO job_run (name, last_run_at, last_host)
-          VALUES (${job}, now(), ${host})
+          VALUES (${job}, ${ahoraIso}, ${host})
           ON CONFLICT (name) DO UPDATE
-            SET last_run_at = now(), last_host = ${host}
-            WHERE job_run.last_run_at < now() - ${`${Math.round(intervaloMs / 1000)} seconds`}::interval
+            SET last_run_at = ${ahoraIso}, last_host = ${host}
+            WHERE job_run.last_run_at <= ${desdeIso}
           RETURNING name`,
     );
     return tomado.length > 0;
@@ -109,7 +119,7 @@ export function createScheduler(db: Db, jobs: Job[], opts: SchedulerOptions = {}
       const corridos: string[] = [];
       for (const job of jobs) {
         try {
-          if (!(await reclamar(job.name, intervalo))) continue;
+          if (!(await reclamar(job.name, intervalo, t))) continue;
           await anotar(job.name, await job.run());
           corridos.push(job.name);
         } catch (error) {

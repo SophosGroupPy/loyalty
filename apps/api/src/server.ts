@@ -34,6 +34,7 @@ import {
 } from "./provisioning.js";
 import { createApnsClient, pushPassUpdate, type ApnsClient } from "./apns.js";
 import { createRateLimiter } from "./rate-limit.js";
+import { createScheduler } from "./scheduler.js";
 import { AscError } from "@sophos/passes";
 import { encryptionKeyFrom, SecretError } from "./secrets.js";
 import type { WebhookEventType } from "@sophos/loyalty-sdk";
@@ -143,6 +144,11 @@ export interface ServerOptions {
   /** Permite sustituir el servicio completo en los tests. */
   passService?: PassService;
   /**
+   * Arranca los trabajos periódicos. Apagado por defecto para que los tests no
+   * levanten timers que peguen a la base sin que nadie se lo pida.
+   */
+  startScheduler?: boolean;
+  /**
    * Clave maestra del back-office. Sin ella, `/admin/session` responde 503 y el
    * back-office queda deshabilitado — que es lo correcto en un entorno que no
    * lo necesita.
@@ -192,6 +198,20 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     opts.passService ?? createPassService(db, opts.googleWallet, opts.fetchImpl);
 
   const clock = opts.now ?? (() => new Date());
+
+  const scheduler = createScheduler(
+    db,
+    [
+      // El orden importa poco, pero el despacho va primero: es el que el
+      // cliente nota.
+      { name: "notifications", run: () => dispatchDue(db, sender) },
+      { name: "webhooks", run: () => deliverDue(db, { ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}) }) },
+      { name: "expiry", run: () => runExpiry(db, clock()) },
+    ],
+    {
+      onError: (job, error) => app.log.error({ err: error, job }, "falló un trabajo periódico"),
+    },
+  );
 
   // Solo sobre las escrituras: las lecturas del POS son baratas y limitarlas
   // rompería la búsqueda de un cliente en una noche cargada, que es justo
@@ -306,6 +326,18 @@ export function createServer(opts: ServerOptions): FastifyInstance {
   // --------------------------------------------------------------------------
   // Autenticación
   // --------------------------------------------------------------------------
+
+  /**
+   * Marca que hubo tráfico, para que el planificador revise la cola seguido.
+   *
+   * **`/health` queda afuera a propósito.** Fly lo consulta cada 30 segundos:
+   * si contara como actividad, el planificador consultaría la base cada minuto
+   * las 24 horas, la base nunca dormiría y se agotaría el cómputo del plan a
+   * mitad de mes. Y como `/health` no toca la base, tampoco la despierta.
+   */
+  app.addHook("onRequest", async (request) => {
+    if (request.url !== "/health") scheduler.markActivity();
+  });
 
   app.addHook("preHandler", async (request, reply) => {
     if (!request.url.startsWith("/v1/")) return;
@@ -2521,6 +2553,11 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     for (const line of body?.logs ?? []) app.log.warn({ apple: line }, "apple wallet");
     return reply.code(200).send();
   });
+
+  if (opts.startScheduler) {
+    app.addHook("onReady", async () => scheduler.start());
+    app.addHook("onClose", async () => scheduler.stop());
+  }
 
   return app;
 }

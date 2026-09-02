@@ -114,6 +114,8 @@ const app = createServer({
   logger: true,
   ...(googleWallet ? { googleWallet } : {}),
   ...(appleWallet ? { appleWallet } : {}),
+  // Los trabajos periódicos solo corren en el proceso de verdad.
+  startScheduler: true,
 });
 
 const port = Number(process.env.PORT ?? 4001);
