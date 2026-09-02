@@ -2,7 +2,7 @@ import { sql } from "drizzle-orm";
 import { getTableConfig } from "drizzle-orm/pg-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { createTestDb, type Db } from "./client.js";
+import { createTestDb, runMigrations, type Db } from "./client.js";
 import { schema } from "./schema.js";
 
 let db: Db;
@@ -45,6 +45,28 @@ afterEach(async () => {
 });
 
 describe("migraciones", () => {
+  it("correrlas de nuevo sobre la misma base no rompe nada", async () => {
+    // Es lo que pasa en cada arranque contra un Postgres persistente. Sin tabla
+    // de control, el segundo intento moría con "relation already exists": el
+    // primer deploy andaba y todos los siguientes no.
+    const segunda = await runMigrations(db);
+    expect(segunda).toEqual([]);
+
+    // Y la base sigue usable: no quedó a medio camino.
+    const tablas = await db.query<{ n: string }>(
+      sql`SELECT count(*)::text AS n FROM information_schema.tables WHERE table_schema = 'public'`,
+    );
+    expect(Number(tablas[0]!.n)).toBeGreaterThan(10);
+  });
+
+  it("registra cuáles aplicó", async () => {
+    const aplicadas = await db.query<{ name: string }>(
+      sql`SELECT name FROM schema_migration ORDER BY name`,
+    );
+    expect(aplicadas.map((r) => r.name)).toContain("0001_init.sql");
+    expect(aplicadas.length).toBeGreaterThanOrEqual(8);
+  });
+
   it("crea todas las tablas del esquema", async () => {
     const rows = await db.query<{ table_name: string }>(
       sql`SELECT table_name FROM information_schema.tables
@@ -68,6 +90,7 @@ describe("migraciones", () => {
       "program",
       "redemption",
       "reward",
+      "schema_migration",
       "webhook_delivery",
       "webhook_endpoint",
     ]);

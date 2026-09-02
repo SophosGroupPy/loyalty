@@ -14,7 +14,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { SQL } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 
 import { schema } from "./schema.js";
@@ -122,19 +122,65 @@ export async function createDb(connectionString?: string): Promise<Db> {
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "migrations");
 
-/** Aplica todas las migraciones en orden alfabético de nombre de archivo. */
+/**
+ * Aplica las migraciones pendientes, en orden alfabético de nombre de archivo.
+ *
+ * **Registra cuáles ya corrieron.** Sin eso, cada arranque intentaba aplicarlas
+ * todas de nuevo: contra una base en memoria da igual porque siempre nace
+ * vacía, pero contra un Postgres persistente el segundo arranque muere con
+ * "relation already exists". El primer deploy anda y todos los siguientes no.
+ *
+ * Corre dentro de una transacción con un lock de nivel transacción: en un
+ * deploy con solapamiento pueden arrancar dos máquinas a la vez, y sin el lock
+ * las dos aplicarían la misma migración. Se usa `pg_advisory_xact_lock` y no la
+ * variante de sesión porque el lock de sesión se pierde detrás de un pooler en
+ * modo transacción, que es justo cómo se conecta a Supabase.
+ *
+ * Devuelve las que aplicó en esta corrida, no todas.
+ */
 export async function runMigrations(db: Db): Promise<string[]> {
   const files = (await readdir(MIGRATIONS_DIR))
     .filter((f) => f.endsWith(".sql"))
     .sort();
 
-  for (const file of files) {
-    const sql = await readFile(join(MIGRATIONS_DIR, file), "utf8");
-    await db.exec(sql);
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migration (
+      name       text PRIMARY KEY,
+      applied_at timestamptz NOT NULL DEFAULT now()
+    );
+  `);
+
+  const aplicadas = new Set(
+    (await db.query<{ name: string }>(sql`SELECT name FROM schema_migration`)).map((r) => r.name),
+  );
+
+  const pendientes = files.filter((f) => !aplicadas.has(f));
+  if (pendientes.length === 0) return [];
+
+  for (const file of pendientes) {
+    const contenido = await readFile(join(MIGRATIONS_DIR, file), "utf8");
+
+    // Cada migración va en su propia transacción: si una falla a la mitad, se
+    // deshace entera y las anteriores quedan aplicadas y registradas. Postgres
+    // hace transaccional casi todo el DDL, así que esto no es una ilusión.
+    await db.exec(`
+      BEGIN;
+      SELECT pg_advisory_xact_lock(${MIGRATION_LOCK});
+      ${contenido}
+      INSERT INTO schema_migration (name) VALUES ('${file.replace(/'/g, "''")}')
+        ON CONFLICT (name) DO NOTHING;
+      COMMIT;
+    `);
   }
 
-  return files;
+  return pendientes;
 }
+
+/**
+ * Identificador del lock de migraciones. Cualquier número constante sirve; lo
+ * único que importa es que sea el mismo en todos los procesos.
+ */
+const MIGRATION_LOCK = 8_274_193;
 
 /** Base limpia y migrada, lista para un test. */
 export async function createTestDb(): Promise<Db> {
