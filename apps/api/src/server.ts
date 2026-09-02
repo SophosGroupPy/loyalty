@@ -187,7 +187,10 @@ const EVENT_TYPES = [
  * bajo ellas y el registro tiene que seguir siendo legible.
  */
 const CONSENT_IDS = [
+  // Las versiones viejas no se sacan nunca: hay personas dadas de alta bajo
+  // ellas y hay que poder responder qué texto leyeron.
   "programa/v1",
+  "programa/v2",
   "identidad/v1",
   "identidad/v2",
 ] as const;
@@ -653,6 +656,9 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     merchant: z.string().min(1),
     phone: z.string().min(6),
     displayName: z.string().optional(),
+    email: z.string().email().optional(),
+    /** ISO `YYYY-MM-DD`. El comercio decide si lo pide; la API no lo exige. */
+    birthdate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     consentVersion: z.string().default("v1"),
     /**
      * Los ids de los textos que el producto dice haber mostrado, validados
@@ -692,6 +698,8 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       programId: program.id,
       phone: parsed.data.phone,
       ...(parsed.data.displayName ? { displayName: parsed.data.displayName } : {}),
+      ...(parsed.data.email ? { email: parsed.data.email } : {}),
+      ...(parsed.data.birthdate ? { birthdate: parsed.data.birthdate } : {}),
       // Mismo formato que la landing, para que las dos vías se lean igual.
       consentVersion: parsed.data.consentIds?.join("+") ?? parsed.data.consentVersion,
       phoneVerified: parsed.data.phoneVerified,

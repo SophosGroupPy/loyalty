@@ -145,6 +145,7 @@ export const membership = pgTable("membership", {
   merchantId: uuid("merchant_id").notNull(),
   serialNumber: text("serial_number").notNull(),
   displayName: text("display_name"),
+  email: text("email"),
   notes: text("notes"),
   tags: text("tags").array().notNull(),
   birthdate: date("birthdate"),

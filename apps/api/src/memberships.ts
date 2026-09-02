@@ -69,6 +69,9 @@ export interface EnrollInput {
   phone: string;
   /** Nombre tal como lo conoce ESTE comercio. No toca la ficha de los demás. */
   displayName?: string;
+  /** Correo y cumpleaños, igual que el nombre: del comercio, no del ecosistema. */
+  email?: string;
+  birthdate?: string;
   consentVersion: string;
   /** El alta desde la landing verifica el celular por OTP; la manual del POS no. */
   phoneVerified?: boolean;
@@ -119,9 +122,11 @@ export async function enroll(db: Db, input: EnrollInput): Promise<EnrollOutput> 
     const inserted = await rows<{ id: string; serial_number: string; balance: number }>(
       tx,
       sql`INSERT INTO membership
-            (person_id, program_id, merchant_id, serial_number, display_name, balance, status)
+            (person_id, program_id, merchant_id, serial_number, display_name,
+             email, birthdate, balance, status)
           VALUES (${personId}, ${input.programId}, ${input.merchantId}, ${serial},
-                  ${input.displayName ?? null}, 0, 'active')
+                  ${input.displayName ?? null}, ${input.email ?? null},
+                  ${input.birthdate ?? null}, 0, 'active')
           ON CONFLICT (person_id, program_id) DO NOTHING
           RETURNING id, serial_number, balance`,
     );

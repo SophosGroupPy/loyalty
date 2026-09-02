@@ -1,0 +1,4 @@
+# El build lo hace Vercel; subir el .next local son 130 MB por deploy y encima
+# puede quedar desincronizado con el código que sí se sube.
+.next
+node_modules

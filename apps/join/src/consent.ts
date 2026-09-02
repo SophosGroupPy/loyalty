@@ -22,11 +22,25 @@ export interface TextoConsentimiento {
   texto: string;
 }
 
-/** Consentimiento del programa del comercio. Obligatorio: sin esto no hay alta. */
+/**
+ * Consentimiento del programa del comercio. Obligatorio: sin esto no hay alta.
+ *
+ * v2 nombra los datos uno por uno. v1 decía "mis datos de contacto y consumo",
+ * que cubría el celular y el correo pero no la fecha de nacimiento ni el número
+ * de documento: nadie lee "datos de contacto" y entiende que está dando su
+ * cédula. Guardar esos dos campos bajo v1 los dejaba sin base legal, y son
+ * justamente los más sensibles del conjunto.
+ *
+ * El número de documento se pide porque es lo que el comensal da al pedir
+ * factura, y es lo que permite unir sus compras — por eso se nombra el fin, no
+ * solo el dato.
+ */
 export const PROGRAMA: TextoConsentimiento = {
-  id: "programa/v1",
+  id: "programa/v2",
   texto:
-    "Acepto participar del programa de fidelidad de %s y que guarde mis datos de contacto y consumo.",
+    "Acepto participar del programa de fidelidad de %s y que guarde mi nombre, " +
+    "celular, correo, fecha de nacimiento y número de documento para " +
+    "identificarme, vincular mis compras y hacerme llegar sus beneficios.",
 };
 
 /**
@@ -54,6 +68,12 @@ export const IDENTIDAD: TextoConsentimiento = {
  * y hay que poder responder qué leyó esa persona.
  */
 export const HISTORIAL: TextoConsentimiento[] = [
+  {
+    id: "programa/v1",
+    texto:
+      "Acepto participar del programa de fidelidad de %s y que guarde mis datos " +
+      "de contacto y consumo.",
+  },
   {
     id: "identidad/v1",
     texto:

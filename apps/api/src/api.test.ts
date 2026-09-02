@@ -467,7 +467,10 @@ describe("identidad compartida con programas separados", () => {
       merchant: "r-1",
       phone: "0993427654",
       phoneVerified: true,
-      consentIds: ["programa/v1", "identidad/v2"],
+      consentIds: ["programa/v2", "identidad/v2"],
+      displayName: "Diego",
+      email: "diego@ejemplo.com",
+      birthdate: "1990-04-17",
     });
     expect(res.statusCode, res.body).toBe(201);
 
@@ -475,7 +478,19 @@ describe("identidad compartida con programas separados", () => {
       db.drizzle,
       sql`SELECT consent_version FROM person WHERE id = ${res.json().personId}`,
     );
-    expect(guardado[0]?.consent_version).toBe("programa/v1+identidad/v2");
+    expect(guardado[0]?.consent_version).toBe("programa/v2+identidad/v2");
+
+    // El correo y el cumpleaños viven en la membresía, NO en `person`: el
+    // registro compartido es solo la identidad verificada, así que darle el
+    // correo a un comercio no se lo da al resto del ecosistema.
+    const ficha = await rows<{ email: string; birthdate: string; display_name: string }>(
+      db.drizzle,
+      sql`SELECT email, birthdate, display_name FROM membership
+           WHERE id = ${res.json().membershipId}`,
+    );
+    expect(ficha[0]?.email).toBe("diego@ejemplo.com");
+    expect(ficha[0]?.display_name).toBe("Diego");
+    expect(String(ficha[0]?.birthdate)).toContain("1990-04-17");
   });
 
   it("un id de consentimiento desconocido no se guarda: el alta falla", async () => {
