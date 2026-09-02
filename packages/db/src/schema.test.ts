@@ -77,6 +77,7 @@ describe("migraciones", () => {
       "apple_device_registration",
       "campaign",
       "event",
+      "job_run",
       "ledger_entry",
       "membership",
       "merchant",

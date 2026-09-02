@@ -97,6 +97,14 @@ export const appleDeviceRegistration = pgTable("apple_device_registration", {
  * La clave privada va cifrada; el certificado no, porque es público y viaja
  * dentro de cada `.pkpass` que se emite.
  */
+/** Coordinación de los trabajos periódicos. Ver `migrations/0009_job_run.sql`. */
+export const jobRun = pgTable("job_run", {
+  name: text("name").primaryKey(),
+  lastRunAt: timestamp("last_run_at", { withTimezone: true }).notNull(),
+  lastHost: text("last_host"),
+  lastResult: jsonb("last_result"),
+});
+
 export const passCertificate = pgTable("pass_certificate", {
   id: uuid("id").primaryKey().defaultRandom(),
   merchantId: uuid("merchant_id").notNull(),

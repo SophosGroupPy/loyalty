@@ -93,7 +93,46 @@ export async function createPostgresDb(connectionString: string): Promise<Db> {
   const pg = await import("pg");
   const { drizzle } = await import("drizzle-orm/node-postgres");
 
-  const pool = new pg.default.Pool({ connectionString });
+  const pool = new pg.default.Pool({
+    connectionString,
+
+    /**
+     * Se sueltan las conexiones ociosas rápido.
+     *
+     * Un Postgres administrado que se suspende por inactividad —Neon lo hace a
+     * los 5 minutos y en el plan gratuito no se puede desactivar— mata las
+     * conexiones abiertas cuando se duerme. Soltándolas antes, no hay nada que
+     * matar: la próxima consulta abre una nueva y la base se despierta sola.
+     */
+    idleTimeoutMillis: 30_000,
+
+    /**
+     * Margen para el arranque en frío.
+     *
+     * Con la base suspendida, la primera conexión espera a que levante. El
+     * default de node-postgres es esperar para siempre, y un request colgado es
+     * peor que uno que falla rápido y se reintenta.
+     */
+    connectionTimeoutMillis: 10_000,
+
+    max: 10,
+  });
+
+  /**
+   * **Sin esto, el proceso se cae.**
+   *
+   * `Pool` emite `error` cuando una conexión ociosa se rompe, que es
+   * exactamente lo que pasa cuando la base se suspende, se reinicia, o hay un
+   * corte de red. En Node, un evento `error` sin manejador tira una excepción
+   * no atrapada y mata el proceso entero.
+   *
+   * No hay nada que hacer con estos errores salvo registrarlos: la conexión
+   * rota ya salió del pool y la siguiente consulta abre otra. Lo que no puede
+   * pasar es que se lleve puesta la API.
+   */
+  pool.on("error", (error) => {
+    console.error("[db] conexión ociosa caída (se descarta y se sigue):", error.message);
+  });
 
   const db = drizzle(pool, { schema }) as unknown as Database;
 
