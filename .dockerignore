@@ -1,0 +1,27 @@
+# Lo que no puede entrar a la imagen bajo ningún concepto.
+#
+# El contexto de build se sube tal como está en disco, igual que hacía
+# `railway up`: el .gitignore no protege acá. Un certificado o un .env que se
+# cuele en una capa queda en la imagen para siempre, aunque después se borre en
+# una capa posterior.
+certs/
+.env
+.env.local
+*.p8
+*.p12
+*.pem
+*.key
+*service-account*.json
+
+# Lo que se reconstruye adentro.
+node_modules/
+dist/
+**/.next/
+**/node_modules/
+
+# Ruido.
+.git/
+.github/
+*.log
+.DS_Store
+docs/

@@ -37,7 +37,7 @@ Todo esto cambió después de que se escribieron los documentos del repo.
 | Apple Developer Program | **Activo** | Membresía de organización desde el 2026-09-01. App Store Connect habilitado. Vendedor: `SOPHOS GROUP E.A.S.` |
 | Entitlement NFC de Apple | **En revisión** | Solicitado el 2026-09-01. Dos semanas o más, aprobación discrecional. Se declararon **0 terminales con Apple VAS desplegados**, que es la verdad. |
 | Clase `don-julio` | **Publicada** | Era la clase de prueba de un restaurante ficticio. Al conceder el publishing access, Google publicó automáticamente toda clase en Active. Hoy figura `APPROVED`. |
-| Infraestructura Railway | **Sin resolver** | Pospuesto desde el 2026-08-13. El proyecto creado por error en la cuenta personal ya fue borrado. |
+| Infraestructura | **Fly.io** | Decidido el 2026-09-01: se descartó Railway porque el equipo ya tiene cuenta de Fly funcionando. `Dockerfile` y `fly.toml` están en el repo. |
 
 ### `don-julio` está quemado
 
@@ -286,7 +286,7 @@ Están acá para que nadie las vuelva a descubrir.
 | Actualización de saldo | Verificado contra la API real: el saldo se actualiza en una tarjeta ya guardada sin reemitirla. |
 | Tope de notificaciones | 3 por tarjeta cada 24 h, regla de Google. Apple no publica una. Se controla del lado de Sophos porque el Issuer es único para todo el ecosistema: si un comercio abusa, el throttling afecta a todos. |
 | Revocar un Pass Type ID | **No se puede** desde la API ni desde el portal. La API responde 403 con "This certificate can only be revoked by Apple Developer Program Support", y la página del certificado solo ofrece descargarlo. La única salida es abrir un caso con soporte. Verificado el 2026-09-01. |
-| `.railwayignore` | `railway up` sube el directorio **tal como está en disco**, no lo commiteado. El `.gitignore` no protege ahí — por eso existe el `.railwayignore` que excluye `.env.local`. |
+| `.dockerignore` | El contexto de build sube el directorio **tal como está en disco**, no lo commiteado. El `.gitignore` no protege ahí, y un secreto que entre en una capa queda en la imagen aunque se borre después. Por eso el `.dockerignore` excluye `certs/`, `.env.local` y todo `*.p8`, `*.pem` y `*.key`. |
 
 Queda sin verificar lo que requiere un teléfono Android real: las geocercas y
 el comportamiento efectivo del tope de notificaciones. El detalle de cómo
@@ -328,16 +328,14 @@ ya firmados no pasa, y volver a pedir consentimiento a una base ya dada de alta
 tiene una tasa de respuesta miserable. Nada de esto se le promete al comercio
 ni al cliente final; es solo no cerrarse la opción.
 
-### El workspace de Railway
+### El workspace de Fly
 
 La base de datos va a contener las tarjetas, saldos y datos de clientes de
 todos los comercios del ecosistema. **No va en una cuenta personal.** Va en un
 workspace a nombre de Sophos, con un segundo miembro desde el arranque.
 
-Transferir un proyecto después se puede y preserva volúmenes, variables,
-historial y dominios, pero exige plan activo en las dos cuentas y una
-invitación que hay que aceptar dentro de 24 h. Por eso conviene arrancar en el
-lugar correcto en vez de mover después.
+Mover una app entre organizaciones después es trabajo evitable. Conviene
+arrancar en el lugar correcto.
 
 ---
 
@@ -347,9 +345,9 @@ Ordenado por lo que desbloquea a lo demás, no por dificultad.
 
 1. **Publicar el repo en un remoto.** Hoy no existe fuera de una máquina. Va a
    una organización de GitHub de Sophos, no a una cuenta personal — mismo
-   criterio que Railway y por la misma razón.
+   criterio que la infraestructura y por la misma razón.
 
-2. **Resolver el workspace de Railway y desplegar.** Es lo único que hoy separa
+2. **Desplegar en Fly.** Es lo único que hoy separa
    a un módulo construido y testeado de un módulo que existe. Todo lo demás se
    prueba mejor contra un entorno real.
 

@@ -4,7 +4,7 @@
  * Dos drivers, un solo esquema:
  * - **PGlite** en desarrollo y en los tests — Postgres real compilado a WASM,
  *   corre en proceso. Sin servidor que levantar y cada test arranca limpio.
- * - **node-postgres** en producción, contra el Postgres de Railway.
+ * - **node-postgres** en producción, contra el Postgres de Fly.
  *
  * El SQL es el mismo en los dos casos, así que lo que pasa en los tests es lo
  * que va a pasar en producción.
@@ -29,7 +29,7 @@ export interface Db {
    * Existe porque `drizzle.execute()` no devuelve lo mismo en los dos drivers:
    * PGlite entrega `{rows, fields, affectedRows}` y node-postgres un
    * `QueryResult`. Normalizarlo acá evita que la diferencia se filtre a cada
-   * consulta y que un test en verde contra PGlite falle en Railway.
+   * consulta y que un test en verde contra PGlite falle en producción.
    */
   query<T = Record<string, unknown>>(query: SQL): Promise<T[]>;
   /**

@@ -54,7 +54,7 @@ pnpm dev           # levanta la API en :4001
 
 Sin `DATABASE_URL` la API levanta **PGlite en memoria** — Postgres real compilado
 a WASM, sin servidor que instalar. Sirve para desarrollo, pero pierde todo al
-reiniciar. Con `DATABASE_URL` apunta al Postgres de Railway y corre las mismas
+reiniciar. Con `DATABASE_URL` apunta al Postgres de Fly y corre las mismas
 migraciones.
 
 ### Variables

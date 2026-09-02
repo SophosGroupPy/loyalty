@@ -1,0 +1,39 @@
+# Configuración de la API en Fly.
+#
+# El nombre de la app y la región se confirman al crearla con `fly launch`.
+
+app = "sophos-loyalty"
+primary_region = "eze"          # Ezeiza: la región más cercana a Asunción
+
+[build]
+
+[env]
+  PORT = "8080"
+  NODE_ENV = "production"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+
+  # **No se apaga sola.** Con `auto_stop_machines` el contenedor se suspende sin
+  # tráfico, y el primer request después paga el arranque. Eso arruinaría
+  # justamente lo que más importa: el POS consultando un cliente con la cola
+  # esperando. Además hay trabajo en segundo plano —el push a las wallets tras
+  # cada acumulación— que no puede quedar a mitad de camino.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+[[vm]]
+  # La firma de pases y el redimensionado de logos son picos de CPU cortos.
+  # 1 GB deja margen para eso sin pagar de más.
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

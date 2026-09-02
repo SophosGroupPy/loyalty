@@ -1,7 +1,7 @@
 /**
  * Punto de entrada del servicio.
  *
- * En Railway corre con `DATABASE_URL` apuntando al Postgres del proyecto. Sin
+ * En Fly corre con `DATABASE_URL` apuntando al Postgres del proyecto. Sin
  * esa variable levanta PGlite en memoria, que sirve para probar en local pero
  * pierde todo al reiniciar.
  */
@@ -56,7 +56,7 @@ function requireSigningKey(): Uint8Array {
 /**
  * En producción la base tiene que ser un Postgres real.
  *
- * Sin esta guarda, olvidarse de adjuntar la base en Railway no rompe nada
+ * Sin esta guarda, olvidarse de adjuntar la base en Fly no rompe nada
  * visible: el servicio arranca, acepta altas, emite tarjetas y acumula
  * puntos — y pierde todo en el primer reinicio. Es la peor forma de fallar,
  * porque parece que funciona.
