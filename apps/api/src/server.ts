@@ -645,6 +645,16 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     phone: z.string().min(6),
     displayName: z.string().optional(),
     consentVersion: z.string().default("v1"),
+    /**
+     * Los ids de los textos que el producto dice haber mostrado, validados
+     * contra la misma lista cerrada que usa la landing.
+     *
+     * `consentVersion` acepta cualquier string y se queda por compatibilidad,
+     * pero un alta que llega con un rótulo libre no permite reconstruir qué
+     * leyó la persona — que es exactamente lo que exige la Ley 7593/2025. Los
+     * caminos nuevos mandan `consentIds`.
+     */
+    consentIds: z.array(z.enum(CONSENT_IDS)).min(1).optional(),
     phoneVerified: z.boolean().default(false),
   });
 
@@ -673,7 +683,8 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       programId: program.id,
       phone: parsed.data.phone,
       ...(parsed.data.displayName ? { displayName: parsed.data.displayName } : {}),
-      consentVersion: parsed.data.consentVersion,
+      // Mismo formato que la landing, para que las dos vías se lean igual.
+      consentVersion: parsed.data.consentIds?.join("+") ?? parsed.data.consentVersion,
       phoneVerified: parsed.data.phoneVerified,
     });
 

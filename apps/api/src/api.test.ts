@@ -458,6 +458,40 @@ describe("identidad compartida con programas separados", () => {
     expect(second.created).toBe(false);
     expect(second.membershipId).toBe(first.membershipId);
   });
+
+  it("guarda los consentimientos con el mismo formato que la landing", async () => {
+    const elmenu = await tokenFor("elmenu");
+    await setupMerchant(elmenu, "r-1", "don-julio");
+
+    const res = await call(elmenu, "POST", "/v1/memberships", {
+      merchant: "r-1",
+      phone: "0993427654",
+      phoneVerified: true,
+      consentIds: ["programa/v1", "identidad/v2"],
+    });
+    expect(res.statusCode, res.body).toBe(201);
+
+    const guardado = await rows<{ consent_version: string }>(
+      db.drizzle,
+      sql`SELECT consent_version FROM person WHERE id = ${res.json().personId}`,
+    );
+    expect(guardado[0]?.consent_version).toBe("programa/v1+identidad/v2");
+  });
+
+  it("un id de consentimiento desconocido no se guarda: el alta falla", async () => {
+    const elmenu = await tokenFor("elmenu");
+    await setupMerchant(elmenu, "r-1", "don-julio");
+
+    // Falla cerrado a propósito. Guardar un rótulo que el servidor no conoce
+    // deja una columna que no apunta a ningún texto, y bajo la Ley 7593/2025
+    // hay que poder mostrar exactamente lo que la persona leyó.
+    const res = await call(elmenu, "POST", "/v1/memberships", {
+      merchant: "r-1",
+      phone: "0993427654",
+      consentIds: ["programa/v9"],
+    });
+    expect(res.statusCode).toBe(400);
+  });
 });
 
 // ---------------------------------------------------------------------------
