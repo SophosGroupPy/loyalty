@@ -179,6 +179,56 @@ export async function verifyEmbedToken(
  * la librería rechaza el que no coincide, así que ninguno de los tres puede
  * usarse en lugar de otro por más que los firme la misma clave.
  */
+// ---------------------------------------------------------------------------
+// Descarga del pase por parte del cliente final
+// ---------------------------------------------------------------------------
+
+const PASS_DOWNLOAD_ISSUER = "sophos-loyalty/pass-download";
+
+/**
+ * Token de un solo uso previsto para que el cliente baje SU pase.
+ *
+ * Hasta ahora el único camino a un `.pkpass` era el web service de PassKit, que
+ * exige `Authorization: ApplePass <token>` — y ese token solo lo tiene un pase
+ * que ya está instalado. Para bajarlo por primera vez había que tenerlo, que es
+ * circular: por eso nadie podía instalar una tarjeta en un iPhone.
+ *
+ * El token **es** la credencial, igual que el link de baja al pie de un mail: no
+ * hay cuenta que pedirle a alguien que nunca creó una. Por eso vive poco. Una
+ * hora alcanza para ir del alta a la wallet y deja fuera al link reenviado por
+ * WhatsApp tres días después.
+ */
+export async function issuePassDownloadToken(
+  signingKey: Uint8Array,
+  membershipId: string,
+  ttlSeconds = 3600,
+): Promise<{ token: string; expiresIn: number }> {
+  const token = await new SignJWT({})
+    .setProtectedHeader({ alg: "HS256" })
+    .setSubject(membershipId)
+    .setIssuer(PASS_DOWNLOAD_ISSUER)
+    .setIssuedAt()
+    .setExpirationTime(`${ttlSeconds}s`)
+    .sign(signingKey);
+
+  return { token, expiresIn: ttlSeconds };
+}
+
+/** Devuelve el `membershipId` que el token autoriza, o `null`. */
+export async function verifyPassDownloadToken(
+  signingKey: Uint8Array,
+  token: string,
+): Promise<string | null> {
+  try {
+    const { payload } = await jwtVerify(token, signingKey, {
+      issuer: PASS_DOWNLOAD_ISSUER,
+    });
+    return typeof payload.sub === "string" ? payload.sub : null;
+  } catch {
+    return null;
+  }
+}
+
 const ADMIN_ISSUER = "sophos-loyalty/admin";
 
 export interface AdminClaims {

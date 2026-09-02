@@ -35,7 +35,7 @@ import {
 import { createApnsClient, pushPassUpdate, type ApnsClient } from "./apns.js";
 import { createRateLimiter } from "./rate-limit.js";
 import { createScheduler } from "./scheduler.js";
-import { AscError } from "@sophos/passes";
+import { AscError, passTypeIdFor } from "@sophos/passes";
 import { encryptionKeyFrom, SecretError } from "./secrets.js";
 import type { WebhookEventType } from "@sophos/loyalty-sdk";
 import { validateConfig, type ProgramConfig } from "@sophos/rules";
@@ -46,10 +46,12 @@ import {
   adminKeyMatches,
   hashSecret,
   issueAdminToken,
+  issuePassDownloadToken,
   issueToken,
   resolveMerchant,
   verifyAdminToken,
   verifyEmbedToken,
+  verifyPassDownloadToken,
   verifyToken,
   type EmbedClaims,
   type AdminClaims,
@@ -192,7 +194,14 @@ const CONSENT_IDS = [
 
 export function createServer(opts: ServerOptions): FastifyInstance {
   const { db, signingKey } = opts;
-  const app = Fastify({ logger: opts.logger ?? false });
+  const app = Fastify({
+    logger: opts.logger ?? false,
+    // El token de descarga del pase viaja como parámetro de ruta y es un JWT:
+    // con el default de 100 caracteres, Fastify contesta 414 antes de mirar la
+    // ruta. Lo encontró el test; en producción habría sido un link de descarga
+    // que nunca funciona, con un código que no dice por qué.
+    maxParamLength: 512,
+  });
 
   const passes =
     opts.passService ?? createPassService(db, opts.googleWallet, opts.fetchImpl);
@@ -1151,6 +1160,100 @@ export function createServer(opts: ServerOptions): FastifyInstance {
 
     const issued = await passes.issueGooglePass(membershipId, merchant.id);
     return reply.code(201).send({ platform: "google", membershipId, ...issued });
+  });
+
+  /**
+   * Link de descarga del pase de Apple para el cliente final.
+   *
+   * Existe porque bajar un `.pkpass` por primera vez era imposible: la única
+   * ruta que servía pases es la del web service de PassKit, y pide
+   * `Authorization: ApplePass <token>` — un token que solo tiene un pase ya
+   * instalado. Para instalarlo había que tenerlo.
+   *
+   * Devuelve una URL con un token firmado en vez del archivo. El alta ocurre
+   * en el backend del producto, y el que tiene que abrir el link es el teléfono
+   * del cliente: mandarle el binario al servidor del producto para que lo
+   * reenvíe es una vuelta de más y lo obliga a manejar un archivo que no le
+   * pertenece.
+   */
+  app.post("/v1/passes/apple", async (request, reply) => {
+    const parsed = passBody.omit({ platform: true }).safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    if (!appleIssuer.enabled) {
+      return reply.code(503).send({
+        error: "apple_wallet_not_configured",
+        message: "Falta la clave de cifrado o el intermedio WWDR.",
+      });
+    }
+
+    const merchant = await withMerchant(request, reply, parsed.data.merchant);
+    if (!merchant) return;
+
+    const membershipId = await resolveMembershipId(merchant.id, parsed.data.membership);
+    if (!membershipId) {
+      return reply
+        .code(404)
+        .send({ error: "membership_not_found", message: "Sin tarjeta en este comercio." });
+    }
+
+    const { token, expiresIn } = await issuePassDownloadToken(signingKey, membershipId);
+
+    // La base es la misma que Apple ya tiene que poder alcanzar para el web
+    // service: si esa URL deja de resolver, el pase estaba roto de todas formas.
+    const base = (opts.appleWallet?.webServiceURL ?? "").replace(/\/+$/, "");
+
+    return reply.code(201).send({
+      platform: "apple",
+      membershipId,
+      downloadUrl: `${base}/public/passes/${token}`,
+      expiresIn,
+    });
+  });
+
+  /**
+   * Entrega el `.pkpass` a quien tenga el token. Sin sesión y sin cuenta.
+   *
+   * El cliente nunca creó credenciales — dio su celular y recibió una tarjeta —
+   * así que el token firmado ES la credencial, igual que el link de baja al pie
+   * de un mail. Vive una hora: alcanza para ir del alta a la wallet y deja
+   * afuera el link reenviado días después.
+   */
+  app.get<{ Params: { token: string } }>("/public/passes/:token", async (request, reply) => {
+    const membershipId = await verifyPassDownloadToken(signingKey, request.params.token);
+    if (!membershipId) {
+      return reply
+        .code(401)
+        .send({ error: "invalid_token", message: "El link venció o no es válido." });
+    }
+
+    const found = await rows<{ serial_number: string; merchant_slug: string }>(
+      db.drizzle,
+      sql`SELECT m.serial_number, mer.slug AS merchant_slug
+            FROM membership m
+            JOIN merchant mer ON mer.id = m.merchant_id
+           WHERE m.id = ${membershipId} AND m.status = 'active'`,
+    );
+
+    const card = found[0];
+    if (!card) return reply.code(404).send({ error: "membership_not_found" });
+
+    const result = await appleIssuer.issue(
+      passTypeIdFor(card.merchant_slug),
+      card.serial_number,
+    );
+
+    if (result.status === "not_found") return reply.code(404).send({ error: "not_found" });
+    if (result.status !== "ok") {
+      return reply.code(503).send({ error: `apple_${result.status}` });
+    }
+
+    return reply
+      .header("content-type", "application/vnd.apple.pkpass")
+      .header("content-disposition", 'attachment; filename="tarjeta.pkpass"')
+      // El pase cambia con cada acumulación: cachearlo mostraría un saldo viejo.
+      .header("cache-control", "no-store")
+      .send(result.pkpass);
   });
 
   /**

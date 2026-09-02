@@ -413,3 +413,99 @@ describe("emisión del pase", () => {
     expect(res.statusCode).toBe(401);
   });
 });
+
+// ---------------------------------------------------------------------------
+// La descarga del cliente final, que es lo que hacía falta para que alguien
+// pudiera instalar una tarjeta por primera vez
+// ---------------------------------------------------------------------------
+
+describe("descarga del pase por el cliente", () => {
+  async function tokenProducto(): Promise<string> {
+    const res = await app.inject({
+      method: "POST",
+      url: "/oauth/token",
+      payload: { grant_type: "client_credentials", client_id: "cid", client_secret: "sec" },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    return res.json().access_token;
+  }
+
+  async function linkDeDescarga(): Promise<string> {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/passes/apple",
+      headers: { authorization: `Bearer ${await tokenProducto()}` },
+      payload: { merchant: "r-1", membership: { serial: SERIAL } },
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    return res.json().downloadUrl;
+  }
+
+  it("entrega el .pkpass a quien tenga el link, sin sesión", async () => {
+    await cargarCertificado();
+    const url = await linkDeDescarga();
+
+    // El cliente nunca creó una cuenta: el token ES la credencial.
+    const res = await app.inject({ method: "GET", url: new URL(url).pathname });
+
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.headers["content-type"]).toBe("application/vnd.apple.pkpass");
+    // Un .pkpass es un ZIP: si no arranca con PK, iOS lo rechaza sin decir por qué.
+    expect(res.rawPayload.subarray(0, 2).toString("latin1")).toBe("PK");
+  });
+
+  it("no se cachea: el saldo cambia con cada consumo", async () => {
+    await cargarCertificado();
+    const res = await app.inject({ method: "GET", url: new URL(await linkDeDescarga()).pathname });
+    expect(res.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("un token inventado no sirve", async () => {
+    await cargarCertificado();
+    const res = await app.inject({ method: "GET", url: "/public/passes/no-es-un-token" });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("un token firmado con otra clave no sirve", async () => {
+    await cargarCertificado();
+    const { issuePassDownloadToken } = await import("./auth.js");
+    const { token } = await issuePassDownloadToken(
+      new TextEncoder().encode("otra-clave-distinta-de-la-del-servidor"),
+      "00000000-0000-0000-0000-000000000000",
+    );
+    const res = await app.inject({ method: "GET", url: `/public/passes/${token}` });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("un token vencido no sirve", async () => {
+    await cargarCertificado();
+    const { issuePassDownloadToken } = await import("./auth.js");
+    // TTL negativo: nace vencido. Es lo que evita que el link reenviado por
+    // WhatsApp una semana después siga entregando la tarjeta de otro.
+    const { token } = await issuePassDownloadToken(SIGNING_KEY, merchantId, -1);
+    const res = await app.inject({ method: "GET", url: `/public/passes/${token}` });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("un producto no puede pedir el link de una tarjeta de otro producto", async () => {
+    await cargarCertificado();
+    await rows(
+      db.drizzle,
+      sql`INSERT INTO product (slug, name, client_id, client_secret_hash)
+          VALUES ('noctu', 'Noctu', 'cid-noctu', ${await hashSecret("sec")})`,
+    );
+    const auth = await app.inject({
+      method: "POST",
+      url: "/oauth/token",
+      payload: { grant_type: "client_credentials", client_id: "cid-noctu", client_secret: "sec" },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/passes/apple",
+      headers: { authorization: `Bearer ${auth.json().access_token}` },
+      payload: { merchant: "r-1", membership: { serial: SERIAL } },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+});
