@@ -460,6 +460,38 @@ describe("descarga del pase por el cliente", () => {
     expect(res.headers["cache-control"]).toBe("no-store");
   });
 
+  it("el link para mandar por correo puede vivir más de una hora", async () => {
+    await cargarCertificado();
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/passes/apple",
+      headers: { authorization: `Bearer ${await tokenProducto()}` },
+      payload: {
+        merchant: "r-1",
+        membership: { serial: SERIAL },
+        ttlSeconds: 7 * 24 * 3600,
+      },
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    expect(res.json().expiresIn).toBe(7 * 24 * 3600);
+  });
+
+  it("no se puede pedir un link eterno", async () => {
+    // El tope existe para que un correo reenviado meses después no siga
+    // entregando la tarjeta de otra persona.
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/passes/apple",
+      headers: { authorization: `Bearer ${await tokenProducto()}` },
+      payload: {
+        merchant: "r-1",
+        membership: { serial: SERIAL },
+        ttlSeconds: 365 * 24 * 3600,
+      },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
   it("un token inventado no sirve", async () => {
     await cargarCertificado();
     const res = await app.inject({ method: "GET", url: "/public/passes/no-es-un-token" });

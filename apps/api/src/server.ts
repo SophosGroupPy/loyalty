@@ -1185,7 +1185,22 @@ export function createServer(opts: ServerOptions): FastifyInstance {
    * pertenece.
    */
   app.post("/v1/passes/apple", async (request, reply) => {
-    const parsed = passBody.omit({ platform: true }).safeParse(request.body);
+    const parsed = passBody
+      .omit({ platform: true })
+      .extend({
+        /**
+         * Cuánto vive el link, en segundos. Por defecto una hora.
+         *
+         * Una hora alcanza para ir del alta a la wallet en el mismo momento,
+         * que es el caso normal. No alcanza cuando el link viaja por correo:
+         * quien lo abre a la mañana siguiente encontraría un link muerto y no
+         * tendría forma de pedir otro. El tope de una semana es el equilibrio
+         * entre eso y que un correo reenviado meses después siga entregando la
+         * tarjeta de otra persona.
+         */
+        ttlSeconds: z.number().int().positive().max(7 * 24 * 3600).optional(),
+      })
+      .safeParse(request.body);
     if (!parsed.success) return badRequest(reply, parsed.error.issues);
 
     if (!appleIssuer.enabled) {
@@ -1205,7 +1220,11 @@ export function createServer(opts: ServerOptions): FastifyInstance {
         .send({ error: "membership_not_found", message: "Sin tarjeta en este comercio." });
     }
 
-    const { token, expiresIn } = await issuePassDownloadToken(signingKey, membershipId);
+    const { token, expiresIn } = await issuePassDownloadToken(
+      signingKey,
+      membershipId,
+      parsed.data.ttlSeconds,
+    );
 
     // La base es la misma que Apple ya tiene que poder alcanzar para el web
     // service: si esa URL deja de resolver, el pase estaba roto de todas formas.
