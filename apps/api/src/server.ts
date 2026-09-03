@@ -2094,22 +2094,35 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     const base = program.config ?? ({} as ProgramConfig);
     const minTotal = parsed.data.minTotal;
 
-    const earn =
+    const nuevaBase =
       parsed.data.kind === "points"
-        ? [
-            {
-              on: "order.paid" as const,
-              rate: { per: parsed.data.per, points: parsed.data.points },
-              ...(minTotal ? { minTotal } : {}),
-            },
-          ]
-        : [
-            {
-              on: "order.paid" as const,
-              stamps: 1,
-              ...(minTotal ? { minTotal } : {}),
-            },
-          ];
+        ? {
+            on: "order.paid" as const,
+            rate: { per: parsed.data.per, points: parsed.data.points },
+            ...(minTotal ? { minTotal } : {}),
+          }
+        : {
+            on: "order.paid" as const,
+            stamps: 1,
+            ...(minTotal ? { minTotal } : {}),
+          };
+
+    // Se reemplaza SOLO la regla base, no el array entero.
+    //
+    // `earn` no es una regla: es la lista completa, y ahí viven también los
+    // multiplicadores —el 2x de los jueves— y las reglas de otros eventos, como
+    // el `ticket.validated` de un venue. Pisar el array desde una pantalla que
+    // solo edita "cuánto se gana por consumo" borraría en silencio promociones
+    // que el comercio configuró en otro lado.
+    const conservadas = ((base as { earn?: unknown[] }).earn ?? []).filter((r) => {
+      const regla = r as { on?: string; multiplier?: number };
+      // Los multiplicadores sobreviven aunque sean de `order.paid`: no compiten
+      // con la regla base, la escalan.
+      if (regla.multiplier !== undefined) return true;
+      return regla.on !== "order.paid";
+    });
+
+    const earn = [nuevaBase, ...conservadas];
 
     // Se preserva todo lo demás: topes, vencimiento, huso, niveles y
     // notificaciones los administran otras pantallas.

@@ -304,6 +304,38 @@ describe("aislamiento de la sesión de consola", () => {
     expect(res.json().error).toBe("kind_change_blocked");
   });
 
+  it("no borra los multiplicadores ni las reglas de otros eventos", async () => {
+    // Un happy hour y una regla de otro evento, como las que configura otra
+    // pantalla. `earn` es la lista completa, no una sola regla.
+    await asProduct(elmenuToken)("PUT", "/v1/programs", {
+      merchant: "r-1",
+      kind: "points",
+      config: {
+        earn: [
+          { on: "order.paid", rate: { per: 10_000, points: 1 } },
+          { on: "order.paid", multiplier: 2, when: { weekday: ["thu"] } },
+          { on: "ticket.validated", points: 5 },
+        ],
+      },
+    });
+
+    const nuevo = await asProduct(elmenuToken)("POST", "/v1/embed-tokens", { merchant: "r-1" });
+    await asEmbed(nuevo.json().token)("PUT", "/embed/program", {
+      kind: "points",
+      per: 5_000,
+      points: 1,
+    });
+
+    const despues = (await asEmbed(nuevo.json().token)("GET", "/embed/program")).json();
+    const reglas = despues.config.earn;
+
+    // La base cambió…
+    expect(reglas.find((r: { rate?: { per: number } }) => r.rate)?.rate.per).toBe(5_000);
+    // …y lo demás sigue vivo.
+    expect(reglas.some((r: { multiplier?: number }) => r.multiplier === 2)).toBe(true);
+    expect(reglas.some((r: { on: string }) => r.on === "ticket.validated")).toBe(true);
+  });
+
   it("un comercio no puede editar el programa de otro", async () => {
     const otro = await asProduct(elmenuToken)("POST", "/v1/embed-tokens", { merchant: "r-2" });
     const res = await asEmbed(otro.json().token)("PUT", "/embed/program", {
