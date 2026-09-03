@@ -397,6 +397,7 @@ describe("resiliencia ante una caída de Google", () => {
       enabled: true,
       issueGooglePass: vi.fn(),
       syncGooglePass: vi.fn().mockRejectedValue(new Error("boom")),
+      refreshGoogleClass: vi.fn().mockRejectedValue(new Error("boom")),
       sendMessage: vi.fn().mockRejectedValue(new Error("boom")),
       pendingSync: vi.fn().mockResolvedValue([]),
     };

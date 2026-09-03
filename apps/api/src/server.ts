@@ -403,6 +403,59 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       });
   }
 
+  /**
+   * Propaga un cambio de diseño o de geocercas a las tarjetas ya emitidas.
+   *
+   * Antes, guardar el diseño solo marcaba las tarjetas como "cambiadas" y ahí
+   * quedaba: la consola prometía que se iban a actualizar y no pasaba nada,
+   * porque nadie disparaba la entrega. Un cambio de saldo sí se empuja al toque
+   * —ver `syncPassInBackground`— pero un cambio de diseño se quedaba sin camino.
+   *
+   * Las dos plataformas se actualizan distinto y por eso hay dos caminos:
+   *
+   * - **Google**: colores, logo, imagen y geocercas viven en la CLASE, que es
+   *   una por comercio. Una sola llamada re-registra la clase y con eso todas
+   *   las tarjetas del comercio quedan al día. No se toca tarjeta por tarjeta.
+   *
+   * - **Apple**: el pase no se empuja, se avisa. `markMerchantPassesUpdated` ya
+   *   marcó que cambió; acá se manda el push a cada dispositivo, y el iPhone
+   *   viene a buscar el pase nuevo —que se arma con el diseño actual al momento
+   *   de servirlo. Sin este push el teléfono no se entera nunca.
+   *
+   * En segundo plano y a prueba de fallas: que Apple o Google estén caídos no
+   * puede hacer fallar el guardado del diseño, que ya se persistió.
+   */
+  function refreshMerchantPassesInBackground(merchantId: string): void {
+    void passes.refreshGoogleClass(merchantId).catch((error) => {
+      app.log.error({ err: error, merchantId }, "no se pudo actualizar la clase de Google");
+    });
+
+    if (!apns || !encryptionKey || !opts.appleWallet?.wwdrCertificatePem) return;
+    const wwdr = opts.appleWallet.wwdrCertificatePem;
+
+    void (async () => {
+      const activos = await rows<{ membership_id: string }>(
+        db.drizzle,
+        sql`SELECT membership_id FROM pass_instance
+            WHERE platform = 'apple' AND state = 'active'
+              AND membership_id IN (SELECT id FROM membership WHERE merchant_id = ${merchantId})`,
+      );
+
+      for (const { membership_id } of activos) {
+        try {
+          await pushPassUpdate(db, membership_id, apns, encryptionKey, wwdr);
+        } catch (error) {
+          // Un dispositivo que no acepta el push no puede frenar a los demás:
+          // el saldo y el diseño ya están del lado del servidor, y el pase se
+          // sirve actualizado la próxima vez que el teléfono lo pida.
+          app.log.error({ err: error, membershipId: membership_id }, "falló el push de diseño a Apple");
+        }
+      }
+    })().catch((error) => {
+      app.log.error({ err: error, merchantId }, "falló el refresco de pases de Apple");
+    });
+  }
+
   // --------------------------------------------------------------------------
   // Autenticación
   // --------------------------------------------------------------------------
@@ -2669,6 +2722,7 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     );
 
     await markMerchantPassesUpdated(db, merchant.id);
+    refreshMerchantPassesInBackground(merchant.id);
 
 
     return reply.code(201).send({ id: created[0]?.id });
@@ -2690,6 +2744,7 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     // Las geocercas van adentro del pase: sacar una del panel no la saca del
     // teléfono de nadie hasta que se baje una versión nueva.
     await markMerchantPassesUpdated(db, merchant.id);
+    refreshMerchantPassesInBackground(merchant.id);
 
     return reply.send({ ok: true });
   });
@@ -2763,6 +2818,7 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     // El diseño vive adentro de cada pase emitido, así que cambiarlo no alcanza
     // con guardarlo: hay que decirle a los teléfonos que hay una versión nueva.
     await markMerchantPassesUpdated(db, merchant.id);
+    refreshMerchantPassesInBackground(merchant.id);
 
     return reply.send({ ok: true, design: parsed.data });
   });

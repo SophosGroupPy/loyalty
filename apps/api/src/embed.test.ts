@@ -8,7 +8,7 @@
 
 import { sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createTestDb, rows, type Db } from "@sophos/db";
 
@@ -1084,5 +1084,90 @@ describe("vencimiento", () => {
 
     expect(await verifyEmbedToken(SIGNING_KEY, token)).toBeNull();
     expect((await asEmbed(token)("GET", "/embed/summary")).statusCode).toBe(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("guardar el diseño llega a las tarjetas ya emitidas", () => {
+  const disenoValido = {
+    programName: "Don Julio",
+    logoUrl: "",
+    backgroundColor: "#111111",
+    foregroundColor: "#FFFFFF",
+    labelColor: "#CCCCCC",
+    balanceLabel: "Puntos",
+    newsLabel: "Novedades",
+  };
+
+  /** Un servidor con el servicio de pases espiado, sobre el mismo comercio. */
+  async function conEspia() {
+    const refreshGoogleClass = vi.fn().mockResolvedValue({ status: "updated" });
+    const spy = {
+      enabled: true,
+      issueGooglePass: vi.fn(),
+      syncGooglePass: vi.fn(),
+      refreshGoogleClass,
+      sendMessage: vi.fn(),
+      pendingSync: vi.fn().mockResolvedValue([]),
+    };
+    const server = createServer({ db, signingKey: SIGNING_KEY, passService: spy });
+    await server.ready();
+
+    const prod = await server.inject({
+      method: "POST",
+      url: "/oauth/token",
+      payload: { grant_type: "client_credentials", client_id: "cid-elmenu", client_secret: "sec" },
+    });
+    const emb = await server.inject({
+      method: "POST",
+      url: "/v1/embed-tokens",
+      headers: { authorization: `Bearer ${prod.json().access_token}` },
+      payload: { merchant: "r-1" },
+    });
+    return { server, refreshGoogleClass, embedToken: emb.json().token as string };
+  }
+
+  it("re-registra la clase de Google del comercio, no una tarjeta suelta", async () => {
+    // El bug: guardar el diseño marcaba las tarjetas como cambiadas y ahí
+    // moría. La clase de Google es una por comercio, así que re-registrarla
+    // actualiza todas las tarjetas de una.
+    const { server, refreshGoogleClass, embedToken } = await conEspia();
+
+    const res = await server.inject({
+      method: "PUT",
+      url: "/embed/design",
+      headers: { authorization: `Bearer ${embedToken}` },
+      payload: disenoValido,
+    });
+    expect(res.statusCode, res.body).toBe(200);
+
+    const [{ id }] = await rows<{ id: string }>(
+      db.drizzle,
+      sql`SELECT id FROM merchant WHERE slug = 'don-julio'`,
+    );
+    expect(refreshGoogleClass).toHaveBeenCalledWith(id);
+
+    await server.close();
+  });
+
+  it("un comercio no puede disparar el refresco de otro", async () => {
+    // El refresco sale del comercio del token, nunca de un id del body.
+    const { server, refreshGoogleClass, embedToken } = await conEspia();
+    await server.inject({
+      method: "PUT",
+      url: "/embed/design",
+      headers: { authorization: `Bearer ${embedToken}` },
+      payload: disenoValido,
+    });
+
+    const [{ id: donJulio }] = await rows<{ id: string }>(
+      db.drizzle,
+      sql`SELECT id FROM merchant WHERE slug = 'don-julio'`,
+    );
+    expect(refreshGoogleClass).toHaveBeenCalledWith(donJulio);
+    expect(refreshGoogleClass).toHaveBeenCalledTimes(1);
+
+    await server.close();
   });
 });

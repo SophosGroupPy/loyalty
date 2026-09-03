@@ -47,6 +47,16 @@ export interface PassService {
    * sin que nadie lo decidiera.
    */
   syncGooglePass(membershipId: string, options?: { notify?: boolean }): Promise<SyncOutcome>;
+  /**
+   * Re-registra la clase de Google del comercio con su diseño actual.
+   *
+   * Los colores, el logo, la imagen y las geocercas viven en la **clase**, no en
+   * cada tarjeta, así que una sola llamada actualiza todas las tarjetas del
+   * comercio a la vez. `syncGooglePass` no sirve para esto: parchea el objeto
+   * (los puntos) y encima corta si el saldo no cambió, que es justo lo que pasa
+   * cuando lo único que cambió fue el diseño.
+   */
+  refreshGoogleClass(merchantId: string): Promise<{ status: "updated" | "skipped"; reason?: string }>;
   /** Manda un mensaje visible al pase. Es la vía de las notificaciones. */
   sendMessage(
     membershipId: string,
@@ -289,6 +299,46 @@ export function createPassService(
         await recordError(db, membershipId, error);
         return { status: "failed", error: messageOf(error) };
       }
+    },
+
+    async refreshGoogleClass(merchantId) {
+      if (!client || !config) return { status: "skipped", reason: "disabled" };
+
+      const found = await rows<{
+        slug: string;
+        display_name: string;
+        legal_name: string;
+        design: CardDesign | null;
+        product_name: string;
+        program_kind: "points" | "stamps" | null;
+      }>(
+        db.drizzle,
+        sql`SELECT mer.slug, mer.display_name, mer.legal_name, mer.design,
+                   prod.name AS product_name, p.kind AS program_kind
+            FROM merchant mer
+            JOIN product prod ON prod.id = mer.product_id
+            LEFT JOIN program p ON p.merchant_id = mer.id AND p.status = 'active'
+            WHERE mer.id = ${merchantId}`,
+      );
+      const mer = found[0];
+      if (!mer) return { status: "skipped", reason: "no_merchant" };
+
+      const design = designOf({
+        design: mer.design,
+        display_name: mer.display_name,
+        product_name: mer.product_name,
+        program_kind: mer.program_kind ?? "points",
+      } as CardRow);
+
+      const loyaltyClass = buildLoyaltyClass({
+        issuerId: config.issuerId,
+        merchant: { slug: mer.slug, displayName: mer.display_name, legalName: mer.legal_name },
+        design,
+        locations: await loadLocations(merchantId),
+      });
+
+      await client.upsertClass(loyaltyClass);
+      return { status: "updated" };
     },
 
     /**
