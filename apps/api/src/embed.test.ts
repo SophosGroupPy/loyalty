@@ -239,6 +239,85 @@ describe("aislamiento de la sesión de consola", () => {
   it("rechaza pedidos sin token", async () => {
     expect((await app.inject({ method: "GET", url: "/embed/summary" })).statusCode).toBe(401);
   });
+
+  it("cambia la regla de acumulación sin tocar el resto", async () => {
+    const antes = (await asEmbed(donJulio)("GET", "/embed/program")).json();
+
+    const res = await asEmbed(donJulio)("PUT", "/embed/program", {
+      kind: "points",
+      per: 5_000,
+      points: 1,
+    });
+
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().config.earn[0].rate.per).toBe(5_000);
+
+    // Lo que administran otras pantallas —topes, vencimiento, huso— tiene que
+    // sobrevivir: si esta pantalla mandara el objeto entero, pisaría lo que la
+    // de ajustes acaba de guardar.
+    const despues = (await asEmbed(donJulio)("GET", "/embed/program")).json();
+    expect(despues.config.timezone).toBe(antes.config.timezone);
+    expect(despues.config.caps).toEqual(antes.config.caps);
+    expect(despues.config.expiry).toEqual(antes.config.expiry);
+  });
+
+  it("el cambio queda vivo: el próximo consumo acumula con la regla nueva", async () => {
+    await asEmbed(donJulio)("PUT", "/embed/program", {
+      kind: "points",
+      per: 5_000,
+      points: 1,
+    });
+
+    const card = await asProduct(elmenuToken)("POST", "/v1/memberships", {
+      merchant: "r-1",
+      phone: "0993999888",
+      phoneVerified: true,
+    });
+
+    const evento = await asProduct(elmenuToken)("POST", "/v1/events", {
+      merchant: "r-1",
+      idempotencyKey: "pedido-regla-nueva",
+      type: "order.paid",
+      amount: 50_000,
+      membership: { id: card.json().membershipId },
+    });
+
+    // Con la regla vieja (1 cada 10.000) habrían sido 5.
+    expect(evento.json().balance).toBe(10);
+  });
+
+  it("no deja pasar de puntos a sellos con tarjetas emitidas", async () => {
+    await asProduct(elmenuToken)("POST", "/v1/memberships", {
+      merchant: "r-1",
+      phone: "0993777666",
+      phoneVerified: true,
+    });
+
+    // Con saldos vivos el cambio reinterpreta lo acumulado: 340 puntos pasarían
+    // a ser 340 sellos, que es otra cosa y mucho más valiosa.
+    const res = await asEmbed(donJulio)("PUT", "/embed/program", {
+      kind: "stamps",
+      rewardAt: 10,
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe("kind_change_blocked");
+  });
+
+  it("un comercio no puede editar el programa de otro", async () => {
+    const otro = await asProduct(elmenuToken)("POST", "/v1/embed-tokens", { merchant: "r-2" });
+    const res = await asEmbed(otro.json().token)("PUT", "/embed/program", {
+      kind: "points",
+      per: 1_000,
+      points: 99,
+    });
+
+    // Su propio token solo alcanza a su comercio, que no tiene programa.
+    expect(res.statusCode).toBe(404);
+
+    const donJulioSigue = (await asEmbed(donJulio)("GET", "/embed/program")).json();
+    expect(donJulioSigue.config.earn[0].rate.points).toBe(1);
+  });
 });
 
 describe("campañas desde la consola", () => {

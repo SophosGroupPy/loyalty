@@ -2025,6 +2025,110 @@ export function createServer(opts: ServerOptions): FastifyInstance {
   });
 
   /**
+   * El comercio cambia su regla de acumulación.
+   *
+   * Solo la regla base: cuánto se gana por consumo. Los topes, el vencimiento y
+   * los horarios viven en `/embed/settings`, y los beneficios en
+   * `/embed/rewards`. Separarlos evita que una pantalla mande el objeto de
+   * configuración entero y pise sin querer lo que otra acaba de guardar.
+   *
+   * Edita el programa vigente en lugar de crear uno nuevo — que es lo que hace
+   * `PUT /v1/programs` — porque acá el comercio está ajustando el suyo, no
+   * reemplazándolo: las tarjetas ya emitidas tienen que seguir apuntando al
+   * mismo programa o dejan de acumular.
+   */
+  const embedProgramBody = z.discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("points"),
+      /** Se gana `points` por cada `per` guaraníes. */
+      per: z.number().int().positive(),
+      points: z.number().int().positive(),
+      minTotal: z.number().int().nonnegative().optional(),
+    }),
+    z.object({
+      kind: z.literal("stamps"),
+      /** Sellos que desbloquean el beneficio. */
+      rewardAt: z.number().int().positive().max(100),
+      /** Consumo mínimo para que la visita cuente un sello. */
+      minTotal: z.number().int().nonnegative().optional(),
+    }),
+  ]);
+
+  app.put("/embed/program", async (request, reply) => {
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const parsed = embedProgramBody.safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const found = await rows<{ id: string; kind: string; config: ProgramConfig }>(
+      db.drizzle,
+      sql`SELECT id, kind, config FROM program
+          WHERE merchant_id = ${merchant.id} AND status = 'active'`,
+    );
+
+    const program = found[0];
+    if (!program) return reply.code(404).send({ error: "no_program" });
+
+    // Cambiar de puntos a sellos reinterpreta los saldos existentes: un cliente
+    // con 340 puntos pasaría a tener 340 sellos, que es otra cosa y muchísimo
+    // más valiosa. Con tarjetas emitidas no se permite; sin ellas, sí.
+    if (program.kind !== parsed.data.kind) {
+      const [{ cards }] = await rows<{ cards: number }>(
+        db.drizzle,
+        sql`SELECT count(*)::int AS cards FROM membership
+             WHERE merchant_id = ${merchant.id} AND status = 'active'`,
+      );
+
+      if (cards > 0) {
+        return reply.code(409).send({
+          error: "kind_change_blocked",
+          message:
+            `No se puede cambiar de ${program.kind === "points" ? "puntos" : "sellos"} a ` +
+            `${parsed.data.kind === "points" ? "puntos" : "sellos"}: hay ${cards} ` +
+            "tarjetas emitidas y sus saldos significan otra cosa en cada modalidad.",
+        });
+      }
+    }
+
+    const base = program.config ?? ({} as ProgramConfig);
+    const minTotal = parsed.data.minTotal;
+
+    const earn =
+      parsed.data.kind === "points"
+        ? [
+            {
+              on: "order.paid" as const,
+              rate: { per: parsed.data.per, points: parsed.data.points },
+              ...(minTotal ? { minTotal } : {}),
+            },
+          ]
+        : [
+            {
+              on: "order.paid" as const,
+              stamps: 1,
+              ...(minTotal ? { minTotal } : {}),
+            },
+          ];
+
+    // Se preserva todo lo demás: topes, vencimiento, huso, niveles y
+    // notificaciones los administran otras pantallas.
+    const config: ProgramConfig =
+      parsed.data.kind === "points"
+        ? { ...(base as object), kind: "points", earn }
+        : { ...(base as object), kind: "stamps", earn, rewardAt: parsed.data.rewardAt };
+
+    await rows(
+      db.drizzle,
+      sql`UPDATE program
+             SET kind = ${parsed.data.kind}, config = ${JSON.stringify(config)}::jsonb
+           WHERE id = ${program.id}`,
+    );
+
+    return reply.send({ kind: parsed.data.kind, config });
+  });
+
+  /**
    * Base de clientes del comercio, con su historial de consumo.
    *
    * **Todo se deriva de los eventos que el propio producto ya envía.** No hay
