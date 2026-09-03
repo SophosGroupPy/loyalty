@@ -398,6 +398,28 @@ describe("emisión del pase", () => {
     expect(listado).toContain("icon.png");
   });
 
+  it("muestra el nombre del comercio al lado del logo, aunque no se haya configurado", async () => {
+    // Apple solo tiene una ranura para el nombre —logoText— y sin esto la
+    // tarjeta salía muda: se veía el logo pero no de qué local era. El setup no
+    // configura logoText, así que cae al nombre del comercio.
+    await cargarCertificado();
+
+    const pass = JSON.parse(extraer(await pedirPase(), "pass.json").toString("utf8"));
+    expect(pass.logoText).toBe("Don Julio");
+  });
+
+  it("respeta el logoText que el comercio sí configuró", async () => {
+    await cargarCertificado();
+    await rows(
+      db.drizzle,
+      sql`UPDATE merchant SET design = jsonb_set(COALESCE(design, '{}'::jsonb), '{logoText}',
+          '"DJ Club"') WHERE id = ${merchantId}`,
+    );
+
+    const pass = JSON.parse(extraer(await pedirPase(), "pass.json").toString("utf8"));
+    expect(pass.logoText).toBe("DJ Club");
+  });
+
   it("usa el logo del comercio cuando se puede bajar", async () => {
     await cargarCertificado();
     await rows(
@@ -486,6 +508,46 @@ describe("emisión del pase", () => {
 
     expect(res.statusCode).toBe(200);
     expect(listar(res)).not.toContain("strip.png");
+  });
+
+  it("acepta una foto pesada como banda, no solo un ícono liviano", async () => {
+    // El bug real: la banda ES una foto —del plato, del salón— y una foto pesa
+    // más que un logo. Con el tope del logo (512 KB) toda foto real se rechazaba
+    // en silencio y la tarjeta salía sin banda, con cara de cupón genérico. El
+    // test viejo usaba una imagen sólida que comprime a nada, así que nunca
+    // cruzaba el tope y el bug pasaba desapercibido.
+    await cargarCertificado();
+    await conBanda();
+
+    // Ruido: no comprime, así que supera holgado los 512 KB del tope viejo.
+    // pngjs no tiene tipos en apps/api; el especificador por variable hace que
+    // TS trate el módulo como `any` sin intentar resolver sus tipos.
+    const pngMod = "pngjs";
+    const { PNG } = (await import(pngMod)) as {
+      PNG: (new (o: { width: number; height: number }) => { data: Buffer }) & {
+        sync: { write(p: unknown): Buffer };
+      };
+    };
+    const ancho = 900;
+    const alto = 500;
+    const foto = new PNG({ width: ancho, height: alto });
+    let semilla = 123456789;
+    for (let i = 0; i < foto.data.length; i += 4) {
+      semilla = (semilla * 1103515245 + 12345) & 0x7fffffff;
+      foto.data[i] = semilla & 255;
+      foto.data[i + 1] = (semilla >> 8) & 255;
+      foto.data[i + 2] = (semilla >> 16) & 255;
+      foto.data[i + 3] = 255;
+    }
+    const pesada = PNG.sync.write(foto);
+    expect(pesada.byteLength).toBeGreaterThan(600 * 1024);
+
+    const res = await conFetch(async () => new Response(pesada, { status: 200 }));
+
+    expect(res.statusCode).toBe(200);
+    expect(listar(res)).toContain("strip.png");
+    // Y quedó rebajada a la medida de Apple, no del tamaño original.
+    expect(medirPng(extraer(res, "strip.png")).ancho).toBe(750);
   });
 
   it("404 para un serial de otro comercio", async () => {

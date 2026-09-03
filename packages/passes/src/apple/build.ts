@@ -154,7 +154,9 @@ export function buildStoreCard(input: BuildPassInput): ApplePass {
 
   const desde = input.memberSince ? mesYAnio(input.memberSince) : null;
   if (desde) {
-    secondaryFields.push({ key: "desde", label: "Cliente desde", value: desde });
+    // Solo "Desde", no "Cliente desde": el campo de al lado ya dice "Cliente",
+    // y repetir la palabra en las dos ranuras contiguas se lee como un error.
+    secondaryFields.push({ key: "desde", label: "Desde", value: desde });
   }
 
   /**

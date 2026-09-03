@@ -194,7 +194,7 @@ describe("LoyaltyObject", () => {
 
     expect(built.textModulesData).toEqual([
       { id: "nivel", header: "Nivel", body: "Oro" },
-      { id: "desde", header: "Cliente desde", body: "agosto 2021" },
+      { id: "desde", header: "Desde", body: "agosto 2021" },
     ]);
   });
 

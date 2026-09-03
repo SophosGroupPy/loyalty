@@ -161,7 +161,8 @@ export function buildLoyaltyObject(input: BuildObjectInput): GoogleLoyaltyObject
   const modulos: GoogleTextModule[] = [];
   if (input.tier) modulos.push({ id: "nivel", header: "Nivel", body: input.tier });
   const desde = input.memberSince ? mesYAnio(input.memberSince) : null;
-  if (desde) modulos.push({ id: "desde", header: "Cliente desde", body: desde });
+  // "Desde" a secas: el módulo de al lado ya dice "Cliente".
+  if (desde) modulos.push({ id: "desde", header: "Desde", body: desde });
   if (modulos.length) object.textModulesData = modulos;
 
   if (input.messages?.length) {

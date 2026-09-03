@@ -80,6 +80,20 @@ export interface AppleIssuerOptions {
  */
 const MAX_LOGO_BYTES = 512 * 1024;
 
+/**
+ * Tope de la banda que se baja del comercio.
+ *
+ * Mucho más alto que el del logo porque la banda ES una foto —del plato, del
+ * salón— y una foto decente pesa más que un logo. Con el tope del logo (512 KB)
+ * toda foto real se rechazaba en silencio y la tarjeta salía sin banda: era el
+ * bug por el que la tarjeta se veía como un cupón genérico.
+ *
+ * Igual se rebaja a `APPLE_STRIP_PX` antes de meterla en el pase, así que este
+ * tope es solo sobre la descarga: evita traerse un archivo enorme, no define el
+ * peso final del `.pkpass`.
+ */
+const MAX_STRIP_BYTES = 5 * 1024 * 1024;
+
 export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer {
   const enabled = Boolean(opts.encryptionKey && opts.wwdrCertificatePem);
   const fetchImpl = opts.fetchImpl ?? fetch;
@@ -107,7 +121,7 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
       if (!response.ok) return null;
 
       const bruta = Buffer.from(await response.arrayBuffer());
-      if (bruta.byteLength > MAX_LOGO_BYTES) return null;
+      if (bruta.byteLength > MAX_STRIP_BYTES) return null;
       return shrinkPng(bruta, APPLE_STRIP_PX);
     } catch {
       return null;
@@ -216,6 +230,11 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
         ...(card.design ?? {}),
         balanceLabel:
           card.design?.balanceLabel ?? (card.program_kind === "stamps" ? "Sellos" : "Puntos"),
+        // El nombre del comercio, al lado del logo. Es la única ranura de Apple
+        // para el nombre y sin esto la tarjeta salía muda: se veía el logo pero
+        // no de qué local era. Por defecto el nombre del comercio; el comercio lo
+        // puede cambiar por una versión más corta desde la consola.
+        logoText: card.design?.logoText || card.display_name,
         // Se resuelve del producto dueño del comercio, no fija: la misma API
         // sirve a elMenú, Noctu y FactuFast.
         attribution: card.design?.attribution ?? `Powered by ${card.product_name}`,
