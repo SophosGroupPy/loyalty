@@ -1619,12 +1619,22 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     const [passes_, webhooks, notifications] = await Promise.all([
       rows<{ drifted: number; errored: number }>(
         db.drizzle,
+        // Solo Google, y no es un olvido: `last_synced_balance` y `last_error`
+        // los escribe únicamente el bucle de sincronización de Google. Un pase
+        // de Apple se actualiza al revés —el teléfono lo baja cuando le avisan
+        // por APNs—, así que esas dos columnas nunca se le tocan.
+        //
+        // Cuando esto contaba todas las plataformas, cada pase de Apple con
+        // saldo figuraba como desfasado para siempre, sin que nadie pudiera
+        // bajar el contador a cero. Un indicador de salud que no puede dar cero
+        // es peor que no tenerlo: enseña a ignorar la pantalla entera.
         sql`SELECT count(*) FILTER (
                      WHERE m.balance IS DISTINCT FROM pi.last_synced_balance)::int AS drifted,
                    count(*) FILTER (WHERE pi.last_error IS NOT NULL)::int AS errored
             FROM pass_instance pi
             JOIN membership m ON m.id = pi.membership_id
-            WHERE pi.state = 'active'`,
+            WHERE pi.state = 'active'
+              AND pi.platform = 'google'`,
       ),
       rows<{ pending: number; exhausted: number }>(
         db.drizzle,

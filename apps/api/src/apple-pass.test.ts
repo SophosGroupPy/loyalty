@@ -667,3 +667,41 @@ describe("descarga del pase por el cliente", () => {
     expect(res.statusCode).toBe(403);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe("indicadores de salud", () => {
+  /** Un pase emitido, sin sincronizar nunca. */
+  async function pase(platform: "apple" | "google"): Promise<void> {
+    const [ms] = await rows<{ id: string }>(
+      db.drizzle,
+      sql`SELECT id FROM membership WHERE serial_number = ${SERIAL}`,
+    );
+    await rows(
+      db.drizzle,
+      sql`INSERT INTO pass_instance (membership_id, merchant_id, platform, external_id, state)
+          VALUES (${ms!.id}, ${merchantId}, ${platform}, ${"ext-" + platform}, 'active')`,
+    );
+  }
+
+  it("un pase de Apple con saldo no cuenta como desfasado", async () => {
+    // `last_synced_balance` lo escribe solo el bucle de Google. Un pase de
+    // Apple lo baja el teléfono cuando le avisan por APNs, así que esa columna
+    // nunca se le toca — y cuando este contador miraba todas las plataformas,
+    // cada pase de Apple con saldo figuraba desfasado para siempre. Un
+    // indicador que no puede dar cero enseña a ignorar la pantalla entera.
+    await pase("apple");
+
+    const res = await admin("GET", "/admin/health");
+    expect(res.json().passes.drifted).toBe(0);
+  });
+
+  it("un pase de Google sin sincronizar sí cuenta", async () => {
+    // El contraste importa: si el filtro por plataforma se pasara de largo y
+    // tapara todo, este test lo agarra.
+    await pase("google");
+
+    const res = await admin("GET", "/admin/health");
+    expect(res.json().passes.drifted).toBe(1);
+  });
+});
