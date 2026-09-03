@@ -57,6 +57,15 @@ export class ResizeError extends Error {
  * que no estaban; promediar da lo que uno espera ver.
  */
 export function shrinkPng(input: Buffer, maxPx: number): Buffer {
+  // Sin esto, un `maxPx` que no sea un número —el caso real fue una constante
+  // mal re-exportada, que llegaba `undefined`— propaga NaN por toda la cuenta
+  // de escala y **devuelve un PNG corrupto de 65 bytes sin tirar ningún error**.
+  // Ese PNG se mete en el .pkpass y iOS rechaza el pase entero sin decir por
+  // qué. Fallar acá convierte un bug invisible en uno que se ve en el primer test.
+  if (!Number.isFinite(maxPx) || maxPx <= 0) {
+    throw new ResizeError(`maxPx tiene que ser un número positivo, llegó ${String(maxPx)}.`);
+  }
+
   let src: PNG;
   try {
     src = PNG.sync.read(input);

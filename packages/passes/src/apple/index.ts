@@ -30,7 +30,14 @@ export type {
 
 export { isPng, solidPng } from "./png.js";
 
-export { appleImagesFrom, shrinkPng, ResizeError, APPLE_ICON_PX, APPLE_LOGO_PX } from "./resize.js";
+export {
+  appleImagesFrom,
+  shrinkPng,
+  ResizeError,
+  APPLE_ICON_PX,
+  APPLE_LOGO_PX,
+  APPLE_STRIP_PX,
+} from "./resize.js";
 export type { AppleImages } from "./resize.js";
 
 export { createAscClient, derToPem, AscError } from "./asc.js";

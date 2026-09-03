@@ -110,7 +110,7 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
     }
   }
 
-  async function loadImages(design: CardDesign): Promise<{ images: PassImages; fallback: boolean }> {
+  async function loadLogo(design: CardDesign): Promise<{ images: PassImages; fallback: boolean }> {
     const icono = solidPng(58, design.backgroundColor);
 
     if (!design.logoUrl) return { images: { "icon.png": icono }, fallback: true };
@@ -138,15 +138,7 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
       // cada cambio de saldo.
       try {
         const { icon, logo: chico } = appleImagesFrom(logo);
-        const imagenes: PassImages = { "icon.png": icon, "logo.png": chico };
-
-        // La banda de foto sobre la tarjeta. Es lo que le da cara de local y no
-        // de cupón genérico, y es opcional: si el comercio no la cargó o no se
-        // puede bajar, el pase sale igual sin ella.
-        const banda = await loadStrip(design);
-        if (banda) imagenes["strip.png"] = banda;
-
-        return { images: imagenes, fallback: false };
+        return { images: { "icon.png": icon, "logo.png": chico }, fallback: false };
       } catch {
         // El PNG se leyó como PNG pero no se pudo decodificar. Es preferible el
         // ícono genérico a un pase que iOS rechaza.
@@ -155,6 +147,23 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
     } catch {
       return { images: { "icon.png": icono }, fallback: true };
     }
+  }
+
+  /**
+   * Junta las imágenes del pase.
+   *
+   * La banda se resuelve **aparte del logo** a propósito: son dos imágenes
+   * independientes y un comercio puede perfectamente cargar la foto de su local
+   * sin haber subido un logo. Cuando esto vivía adentro de la rama del logo, ese
+   * comercio se quedaba sin banda y sin ningún error que lo explicara.
+   */
+  async function loadImages(design: CardDesign): Promise<{ images: PassImages; fallback: boolean }> {
+    const base = await loadLogo(design);
+
+    const banda = await loadStrip(design);
+    if (banda) base.images["strip.png"] = banda;
+
+    return base;
   }
 
   return {

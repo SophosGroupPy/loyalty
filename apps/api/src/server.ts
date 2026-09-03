@@ -19,6 +19,7 @@ import { runExpiry } from "./expiry.js";
 import {
   certificateStatus,
   expiringCertificates,
+  hasSigningMaterial,
   markMerchantPassesUpdated,
   markPassUpdated,
   passesUpdatedSince,
@@ -195,6 +196,43 @@ const CONSENT_IDS = [
   "identidad/v1",
   "identidad/v2",
 ] as const;
+
+/**
+ * Página de error para el cliente final.
+ *
+ * Es la única superficie de esta API que mira una persona y no un servidor, así
+ * que no comparte nada con el resto: sin marca de Sophos —el cliente conoce al
+ * comercio, no a nosotros—, sin links a los que no pueda llegar, y con el
+ * teléfono en la mano como único contexto. Va embebida y no en un template
+ * aparte porque son doce líneas y un archivo suelto se desactualiza solo.
+ */
+function paginaDeProblema(titulo: string, detalle: string): string {
+  const esc = (t: string) =>
+    t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+
+  return `<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(titulo)}</title>
+<style>
+  :root { color-scheme: light dark }
+  body { margin:0; min-height:100dvh; display:grid; place-items:center; padding:24px;
+         font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+         background:#f5f5f7; color:#1d1d1f }
+  main { max-width:26rem; text-align:center }
+  h1 { font-size:1.35rem; margin:0 0 .6rem }
+  p { margin:0; color:#6e6e73 }
+  @media (prefers-color-scheme: dark) {
+    body { background:#000; color:#f5f5f7 } p { color:#98989d }
+  }
+</style>
+<main>
+  <h1>${esc(titulo)}</h1>
+  <p>${esc(detalle)}</p>
+</main>
+</html>`;
+}
 
 export function createServer(opts: ServerOptions): FastifyInstance {
   const { db, signingKey } = opts;
@@ -1214,6 +1252,20 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     const merchant = await withMerchant(request, reply, parsed.data.merchant);
     if (!merchant) return;
 
+    // El certificado es **por comercio**: que Apple esté configurado en el
+    // servidor no significa que este comercio pueda firmar. Comprobarlo acá, y
+    // no al bajar el pase, es la diferencia entre no ofrecer el botón y ofrecer
+    // uno que revienta en la mano del cliente. El producto ya sabe qué hacer
+    // con la ausencia del link —no dibuja el botón— así que el único cambio
+    // visible es que deja de prometer algo que no puede cumplir.
+    if (!(await hasSigningMaterial(db, merchant.id))) {
+      return reply.code(409).send({
+        error: "pass_not_provisioned",
+        message:
+          "Este comercio todavía no tiene certificado de Apple. Google Wallet funciona igual.",
+      });
+    }
+
     const membershipId = await resolveMembershipId(merchant.id, parsed.data.membership);
     if (!membershipId) {
       return reply
@@ -1248,11 +1300,34 @@ export function createServer(opts: ServerOptions): FastifyInstance {
    * afuera el link reenviado días después.
    */
   app.get<{ Params: { token: string } }>("/public/passes/:token", async (request, reply) => {
+    /**
+     * Contesta en castellano y en HTML.
+     *
+     * Esta ruta la abre el teléfono del cliente, no un servidor: es el link que
+     * toca en la pantalla de alta o en el correo. Un `{"error":"..."}` en
+     * pantalla completa no le dice nada y lo deja pensando que se rompió su
+     * teléfono. El JSON queda para quien lo pida explícitamente por `Accept`,
+     * que es como lo consultan los tests y el monitoreo.
+     */
+    const problema = (code: number, error: string, titulo: string, detalle: string) => {
+      const acepta = request.headers.accept ?? "";
+      if (!acepta.includes("text/html")) return reply.code(code).send({ error });
+
+      return reply
+        .code(code)
+        .header("content-type", "text/html; charset=utf-8")
+        .header("cache-control", "no-store")
+        .send(paginaDeProblema(titulo, detalle));
+    };
+
     const membershipId = await verifyPassDownloadToken(signingKey, request.params.token);
     if (!membershipId) {
-      return reply
-        .code(401)
-        .send({ error: "invalid_token", message: "El link venció o no es válido." });
+      return problema(
+        401,
+        "invalid_token",
+        "El link venció",
+        "Por seguridad los links de descarga duran poco. Pedí uno nuevo desde el local y agregá la tarjeta en el momento.",
+      );
     }
 
     const found = await rows<{ serial_number: string; merchant_slug: string }>(
@@ -1264,16 +1339,38 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     );
 
     const card = found[0];
-    if (!card) return reply.code(404).send({ error: "membership_not_found" });
+    if (!card) {
+      return problema(
+        404,
+        "membership_not_found",
+        "No encontramos tu tarjeta",
+        "Puede que te hayas dado de baja de este programa. Consultá en el local para volver a sumarte.",
+      );
+    }
 
     const result = await appleIssuer.issue(
       passTypeIdFor(card.merchant_slug),
       card.serial_number,
     );
 
-    if (result.status === "not_found") return reply.code(404).send({ error: "not_found" });
+    if (result.status === "not_found") {
+      return problema(
+        404,
+        "not_found",
+        "No encontramos tu tarjeta",
+        "Consultá en el local para volver a sumarte al programa.",
+      );
+    }
     if (result.status !== "ok") {
-      return reply.code(503).send({ error: `apple_${result.status}` });
+      // El motivo real —falta el certificado del comercio, falta configuración
+      // del servidor— es información interna: al cliente no le sirve y al
+      // comercio lo expone. Queda en el `error` para el monitoreo.
+      return problema(
+        503,
+        `apple_${result.status}`,
+        "Todavía no podemos generar tu tarjeta",
+        "Estamos terminando de habilitar Apple Wallet para este local. Tus puntos se están sumando igual con tu número de celular.",
+      );
     }
 
     return reply

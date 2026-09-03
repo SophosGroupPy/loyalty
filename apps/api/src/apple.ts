@@ -340,6 +340,28 @@ export async function loadSigningMaterial(
   };
 }
 
+/**
+ * ¿Este comercio puede firmar pases de Apple?
+ *
+ * Existe para poder contestar **antes** de entregar un link de descarga. El
+ * certificado es por comercio, así que tener Apple configurado en el servidor
+ * no dice nada sobre si este comercio en particular puede emitir. Sin esta
+ * consulta, la única forma de enterarse de que falta era que el cliente abriera
+ * el link en su teléfono y se encontrara con un error — y cuando el link viaja
+ * por correo, el botón muerto le queda en la casilla para siempre.
+ *
+ * Va por `merchant_id` y no por Pass Type ID porque el que pregunta es el
+ * producto, que conoce a su comercio y no tiene por qué saber cómo se arma el
+ * identificador de Apple.
+ */
+export async function hasSigningMaterial(db: Db, merchantId: string): Promise<boolean> {
+  const found = await rows<{ ok: number }>(
+    db.drizzle,
+    sql`SELECT 1 AS ok FROM pass_certificate WHERE merchant_id = ${merchantId}`,
+  );
+  return found.length > 0;
+}
+
 export interface CertificateRow {
   merchantId: string;
   merchantName: string;

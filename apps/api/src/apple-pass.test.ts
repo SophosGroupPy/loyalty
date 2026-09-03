@@ -8,13 +8,14 @@
 
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import forge from "node-forge";
+import { PNG } from "pngjs";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createTestDb, rows, type Db } from "@sophos/db";
@@ -146,6 +147,21 @@ const conLogoUrl = () =>
     db.drizzle,
     sql`UPDATE merchant SET design = jsonb_set(COALESCE(design, '{}'::jsonb), '{logoUrl}',
         '"https://ejemplo.com/logo.png"') WHERE id = ${merchantId}`,
+  );
+
+/** Saca un archivo suelto del `.pkpass` para poder mirarlo de verdad. */
+function extraer(res: { rawPayload: Buffer }, nombre: string): Buffer {
+  const dir = mkdtempSync(join(tmpdir(), "pkpass-x-"));
+  writeFileSync(join(dir, "p.pkpass"), res.rawPayload);
+  execFileSync("unzip", ["-qo", join(dir, "p.pkpass"), "-d", dir]);
+  return readFileSync(join(dir, nombre));
+}
+
+const conBanda = () =>
+  rows(
+    db.drizzle,
+    sql`UPDATE merchant SET design = jsonb_set(COALESCE(design, '{}'::jsonb), '{stripImageUrl}',
+        '"https://ejemplo.com/banda.png"') WHERE id = ${merchantId}`,
   );
 
 /** Levanta un servidor con un `fetch` controlado, para el logo. */
@@ -398,6 +414,52 @@ describe("emisión del pase", () => {
     expect(listar(res)).toContain("icon.png");
   });
 
+  it("la banda del comercio va adentro del .pkpass", async () => {
+    // Esto se dio por hecho durante todo un deploy. `APPLE_STRIP_PX` no estaba
+    // re-exportado desde el barrel: llegaba `undefined`, el achicado reventaba,
+    // y el catch de `loadStrip` se tragaba el error y devolvía null. La tarjeta
+    // salía sin banda y sin una sola línea de log que lo dijera.
+    await cargarCertificado();
+    await conBanda();
+
+    // 1024 px fuerza el achicado, que es exactamente donde vivía el bug: con
+    // una imagen chica el resize se saltea y el test pasaría igual roto.
+    const res = await conFetch(async () => new Response(solidPng(1024, "#DC2626"), { status: 200 }));
+
+    expect(res.statusCode).toBe(200);
+    expect(listar(res)).toContain("strip.png");
+
+    // Que el archivo esté no alcanza: el bug original metía en el zip un PNG
+    // corrupto de 65 bytes, y un test de presencia lo daba por bueno. Lo que
+    // hay que comprobar es que iOS lo pueda leer.
+    const banda = PNG.sync.read(extraer(res, "strip.png"));
+    expect(banda.width).toBe(750);
+  });
+
+  it("la banda sale aunque el comercio no haya cargado logo", async () => {
+    // Son dos imágenes independientes: un local puede subir la foto de su salón
+    // sin tener el logo en PNG. Estaban acopladas y nadie lo habría notado.
+    await cargarCertificado();
+    await conBanda();
+
+    const res = await conFetch(async () => new Response(solidPng(1024, "#DC2626"), { status: 200 }));
+    const archivos = listar(res);
+
+    expect(archivos).toContain("strip.png");
+    expect(archivos).not.toContain("logo.png");
+  });
+
+  it("el pase sale igual si la banda no se puede bajar", async () => {
+    // Una banda caída no es motivo para dejar al cliente sin tarjeta.
+    await cargarCertificado();
+    await conBanda();
+
+    const res = await conFetch(async () => new Response("", { status: 500 }));
+
+    expect(res.statusCode).toBe(200);
+    expect(listar(res)).not.toContain("strip.png");
+  });
+
   it("404 para un serial de otro comercio", async () => {
     await cargarCertificado();
     const res = await pedirPase("SN-INVENTADO");
@@ -490,6 +552,44 @@ describe("descarga del pase por el cliente", () => {
       },
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  it("no entrega link si el comercio todavía no tiene certificado", async () => {
+    // Sin cargarCertificado(): es el estado de todo comercio recién dado de alta.
+    //
+    // Antes contestaba 201 con un link que fallaba recién cuando el cliente lo
+    // abría en su teléfono. El producto no tenía forma de saberlo, así que
+    // dibujaba el botón de Apple igual — y cuando el link viajaba por correo, el
+    // botón muerto le quedaba al cliente en la casilla.
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/passes/apple",
+      headers: { authorization: `Bearer ${await tokenProducto()}` },
+      payload: { merchant: "r-1", membership: { serial: SERIAL } },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe("pass_not_provisioned");
+  });
+
+  it("el error que ve el cliente en el teléfono es una página, no un JSON", async () => {
+    // Esta ruta la abre el navegador del cliente. Un {"error":"..."} a pantalla
+    // completa lo deja pensando que se rompió su teléfono.
+    const res = await app.inject({
+      method: "GET",
+      url: "/public/passes/no-es-un-token",
+      headers: { accept: "text/html,application/xhtml+xml" },
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(res.headers["content-type"]).toContain("text/html");
+    expect(res.body).toContain("El link venció");
+    expect(res.body).not.toContain("invalid_token");
+  });
+
+  it("el monitoreo sigue recibiendo JSON", async () => {
+    const res = await app.inject({ method: "GET", url: "/public/passes/no-es-un-token" });
+    expect(res.json().error).toBe("invalid_token");
   });
 
   it("un token inventado no sirve", async () => {
