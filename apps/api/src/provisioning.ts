@@ -76,6 +76,34 @@ export function generateCsr(commonName: string): { privateKeyPem: string; csrPem
   return { privateKeyPem: privateKey, csrPem };
 }
 
+/**
+ * Nombre que tolera App Store Connect.
+ *
+ * Apple rechaza el alta entera —"An invalid value ... for the parameter 'name'"—
+ * si el nombre trae caracteres fuera de ASCII. Un restaurante paraguayo que se
+ * llame "DEMO ElMenú" o "Ñandutí" es el caso normal, no el raro, así que sin
+ * esto media cartera de comercios no se puede provisionar.
+ *
+ * Se transliteran los acentos en vez de borrarlos: "ElMenú" queda "ElMenu" y no
+ * "ElMen". Este nombre es solo la etiqueta que se ve en el portal de Apple — no
+ * toca el Pass Type ID, que sale del slug, ni nada que vea el cliente final.
+ */
+export function asciiName(nombre: string): string {
+  const limpio = nombre
+    .normalize("NFD")
+    // Los diacríticos quedan sueltos tras el NFD: se descartan y la letra base
+    // sobrevive.
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[ñÑ]/g, (c) => (c === "ñ" ? "n" : "N"))
+    .replace(/[^\x20-\x7e]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Un nombre que era todo no-ASCII se quedaría vacío, y Apple rechaza el vacío
+  // igual que rechazaba el acento.
+  return limpio || "comercio";
+}
+
 export interface ProvisionInput {
   merchantId: string;
   /** Slug del comercio. Define el Pass Type ID y no se puede cambiar después. */
@@ -97,11 +125,12 @@ export async function provisionPassCertificate(
 
   if (BURNED_PASS_TYPE_IDS.has(identifier)) throw new BurnedIdentifierError(identifier);
 
-  const existente = await client.findPassTypeId(identifier);
-  const passType =
-    existente ?? (await client.createPassTypeId(identifier, `Sophos Loyalty ${input.displayName}`));
+  const nombreParaApple = `Sophos Loyalty ${asciiName(input.displayName)}`;
 
-  const { privateKeyPem, csrPem } = generateCsr(`Sophos Loyalty ${input.displayName}`);
+  const existente = await client.findPassTypeId(identifier);
+  const passType = existente ?? (await client.createPassTypeId(identifier, nombreParaApple));
+
+  const { privateKeyPem, csrPem } = generateCsr(nombreParaApple);
   const certificatePem = await client.createCertificate(passType.id, csrPem);
 
   const { expiresAt } = await storeCertificate(
@@ -269,6 +298,112 @@ export async function deleteMerchant(
 
   await rows(db.drizzle, sql`DELETE FROM merchant WHERE id = ${merchantId}`);
   return footprint;
+}
+
+/**
+ * Espera antes de reintentar, creciente y con techo.
+ *
+ * Un rechazo de Apple casi nunca se arregla solo en un minuto: o falta un
+ * permiso en la cuenta, o el nombre tiene algo que no le gusta. Reintentar cada
+ * minuto contra una API con rate limit castiga a los comercios que **sí** se
+ * pueden provisionar, porque comparten el mismo cupo.
+ *
+ * El techo de seis horas existe para que un problema que se arregla de verdad
+ * —alguien corrige un permiso— no tarde días en notarse.
+ */
+export function retryDelayMs(attempts: number): number {
+  const SEIS_HORAS = 6 * 60 * 60 * 1000;
+  return Math.min(SEIS_HORAS, 60_000 * 2 ** Math.min(attempts, 10));
+}
+
+export interface ProvisionSweepResult {
+  /** Slugs a los que se les emitió certificado en esta vuelta. */
+  provisioned: string[];
+  /** Los que Apple rechazó, con el motivo. Vuelven a intentarse más tarde. */
+  failed: { slug: string; reason: string }[];
+  /** Cuántos quedaron para la próxima vuelta por el tope de la tanda. */
+  pending: number;
+}
+
+/**
+ * Le da material de firma a los comercios que todavía no lo tienen.
+ *
+ * Es lo que hace que Apple Wallet funcione sin que nadie corra nada: un comercio
+ * que activa el módulo queda emitiendo en iPhone solo. Antes esto era un comando
+ * por comercio, y un paso manual por comercio no escala — se olvida, y el que se
+ * olvidó se entera cuando un cliente no puede agregar su tarjeta.
+ *
+ * Corre por el scheduler, así que además se cura solo: un comercio que falló
+ * porque Apple estaba caído se provisiona en la vuelta siguiente sin que nadie
+ * intervenga.
+ *
+ * **Cada alta quema un Pass Type ID permanente en la cuenta de Apple.** Eso es
+ * el diseño —uno por comercio, porque iOS agrupa las tarjetas por ese
+ * identificador— pero por eso la tanda tiene tope: un error que dé de alta
+ * comercios en masa no puede vaciar la cuenta en una sola vuelta.
+ */
+export async function provisionPendingCertificates(
+  db: Db,
+  asc: AscConfig,
+  encryptionKey: Buffer,
+  opts: { max?: number; fetchImpl?: typeof fetch; now?: () => Date } = {},
+): Promise<ProvisionSweepResult> {
+  const max = opts.max ?? 5;
+  const ahora = opts.now?.() ?? new Date();
+
+  const pendientes = await rows<{ id: string; slug: string; display_name: string; attempts: number }>(
+    db.drizzle,
+    sql`SELECT m.id, m.slug, m.display_name, COALESCE(a.attempts, 0) AS attempts
+          FROM merchant m
+          LEFT JOIN pass_certificate c ON c.merchant_id = m.id
+          LEFT JOIN pass_provision_attempt a ON a.merchant_id = m.id
+         WHERE c.merchant_id IS NULL
+           AND (a.next_attempt_at IS NULL OR a.next_attempt_at <= ${ahora.toISOString()})
+         ORDER BY COALESCE(a.attempts, 0), m.created_at
+         LIMIT ${max + 1}`,
+  );
+
+  const tanda = pendientes.slice(0, max);
+  const provisioned: string[] = [];
+  const failed: { slug: string; reason: string }[] = [];
+
+  for (const m of tanda) {
+    try {
+      await provisionPassCertificate(
+        db,
+        { merchantId: m.id, slug: m.slug, displayName: m.display_name },
+        asc,
+        encryptionKey,
+        opts.fetchImpl,
+      );
+      provisioned.push(m.slug);
+
+      // El estado de "ya está" vive en pass_certificate. Dejar también la fila
+      // del intento sería tener dos fuentes para lo mismo.
+      await rows(
+        db.drizzle,
+        sql`DELETE FROM pass_provision_attempt WHERE merchant_id = ${m.id}`,
+      );
+    } catch (error) {
+      const motivo = error instanceof Error ? error.message : String(error);
+      failed.push({ slug: m.slug, reason: motivo });
+
+      const proximo = new Date(ahora.getTime() + retryDelayMs(m.attempts + 1));
+      await rows(
+        db.drizzle,
+        sql`INSERT INTO pass_provision_attempt
+              (merchant_id, attempts, last_error, next_attempt_at, updated_at)
+            VALUES (${m.id}, 1, ${motivo}, ${proximo.toISOString()}, ${ahora.toISOString()})
+            ON CONFLICT (merchant_id) DO UPDATE
+              SET attempts        = pass_provision_attempt.attempts + 1,
+                  last_error      = EXCLUDED.last_error,
+                  next_attempt_at = EXCLUDED.next_attempt_at,
+                  updated_at      = EXCLUDED.updated_at`,
+      );
+    }
+  }
+
+  return { provisioned, failed, pending: Math.max(0, pendientes.length - tanda.length) };
 }
 
 // ---------------------------------------------------------------------------

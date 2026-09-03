@@ -86,6 +86,7 @@ describe("migraciones", () => {
       "otp_challenge",
       "pass_certificate",
       "pass_instance",
+      "pass_provision_attempt",
       "person",
       "product",
       "program",

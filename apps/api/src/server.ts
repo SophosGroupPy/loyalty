@@ -32,6 +32,7 @@ import { ascConfigFromEnv, createAppleIssuer } from "./apple-pass.js";
 import {
   BurnedIdentifierError,
   deleteMerchant,
+  provisionPendingCertificates,
   merchantFootprint,
   MerchantDeleteError,
   merchantForProvisioning,
@@ -261,6 +262,31 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       { name: "notifications", run: () => dispatchDue(db, sender) },
       { name: "webhooks", run: () => deliverDue(db, { ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}) }) },
       { name: "expiry", run: () => runExpiry(db, clock()) },
+      // Le da material de firma de Apple a los comercios que no lo tienen. Es
+      // lo que hace que activar el módulo alcance para emitir en iPhone, sin
+      // que nadie corra un comando por comercio.
+      //
+      // Va acá y no en el alta del comercio a propósito: si Apple está caído,
+      // dar de alta un comercio tiene que seguir funcionando. Acá se reintenta
+      // solo en la vuelta siguiente.
+      {
+        name: "apple-provisioning",
+        run: async () => {
+          const asc = ascConfigFromEnv();
+          if (!asc || !encryptionKey) return { skipped: "sin credenciales de Apple" };
+
+          const r = await provisionPendingCertificates(db, asc, encryptionKey, {
+            ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+          });
+
+          // Un rechazo de Apple no reintenta gratis: cuesta cupo contra su API y
+          // suele necesitar que alguien mire. Que quede en el log.
+          for (const f of r.failed) {
+            app.log.error({ slug: f.slug, reason: f.reason }, "Apple rechazó el alta del comercio");
+          }
+          return r;
+        },
+      },
     ],
     {
       onError: (job, error) => app.log.error({ err: error, job }, "falló un trabajo periódico"),

@@ -24,12 +24,15 @@ import { AscError, createAscClient, derToPem } from "@sophos/passes";
 
 import { loadSigningMaterial } from "./apple.js";
 import {
+  asciiName,
   BurnedIdentifierError,
   deleteMerchant,
   generateCsr,
   merchantFootprint,
   MerchantDeleteError,
   provisionPassCertificate,
+  provisionPendingCertificates,
+  retryDelayMs,
 } from "./provisioning.js";
 import { encryptionKeyFrom } from "./secrets.js";
 
@@ -345,5 +348,136 @@ describe("borrado de un comercio", () => {
     await expect(
       deleteMerchant(db, "00000000-0000-0000-0000-000000000000", "lo-que-sea"),
     ).rejects.toMatchObject({ code: "not_found" });
+  });
+});
+
+describe("nombres que Apple acepta", () => {
+  it("translitera acentos en vez de borrarlos", () => {
+    // Apple rechazó el alta de "DEMO ElMenú" entera. Un comercio paraguayo con
+    // acento o eñe es el caso normal, no el raro.
+    expect(asciiName("DEMO ElMenú")).toBe("DEMO ElMenu");
+    expect(asciiName("Ñandutí")).toBe("Nanduti");
+    expect(asciiName("Café Ámbar")).toBe("Cafe Ambar");
+  });
+
+  it("deja intacto lo que ya era ASCII", () => {
+    expect(asciiName("Don Julio")).toBe("Don Julio");
+  });
+
+  it("nunca devuelve vacío", () => {
+    // Apple rechaza el nombre vacío igual que rechazaba el acento.
+    expect(asciiName("日本語")).toBe("comercio");
+    expect(asciiName("   ")).toBe("comercio");
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("alta automática de los comercios pendientes", () => {
+  /** Otro comercio en el mismo producto, sin certificado. */
+  async function otroComercio(slug: string, nombre: string): Promise<string> {
+    const [p] = await rows<{ id: string }>(
+      db.drizzle,
+      sql`SELECT id FROM product WHERE slug = 'elmenu'`,
+    );
+    const [m] = await rows<{ id: string }>(
+      db.drizzle,
+      sql`INSERT INTO merchant (product_id, external_id, slug, legal_name, display_name)
+          VALUES (${p!.id}, ${"ext-" + slug}, ${slug}, ${nombre + " SRL"}, ${nombre})
+          RETURNING id`,
+    );
+    return m!.id;
+  }
+
+  it("le da certificado al comercio que no lo tiene", async () => {
+    const { fetchImpl } = apple();
+
+    const r = await provisionPendingCertificates(db, asc, clave, { fetchImpl });
+
+    expect(r.provisioned).toEqual(["la-vecina"]);
+    expect(r.failed).toEqual([]);
+
+    const material = await loadSigningMaterial(
+      db, "pass.com.sophosgroup.l.la-vecina", clave, "",
+    );
+    expect(material).not.toBeNull();
+  });
+
+  it("no vuelve a pedirle a Apple por uno que ya tiene certificado", async () => {
+    // Cada alta quema un Pass Type ID permanente. Repetir sería caro y sucio.
+    const { fetchImpl } = apple();
+    await provisionPendingCertificates(db, asc, clave, { fetchImpl });
+
+    const { fetchImpl: segundo, llamadas } = apple();
+    const r = await provisionPendingCertificates(db, asc, clave, { fetchImpl: segundo });
+
+    expect(r.provisioned).toEqual([]);
+    expect(llamadas).toHaveLength(0);
+  });
+
+  it("un rechazo de Apple no frena a los demás comercios", async () => {
+    await otroComercio("don-pedro", "Don Pedro");
+
+    // Falla el primero que pida un certificado; el resto sigue.
+    let primera = true;
+    const { fetchImpl } = apple();
+    const conFalla = (async (url: string | URL, init?: RequestInit) => {
+      if (String(url).endsWith("/certificates") && primera) {
+        primera = false;
+        return Response.json({ errors: [{ title: "Entity Error", detail: "nombre inválido" }] }, { status: 409 });
+      }
+      return (fetchImpl as any)(url, init);
+    }) as unknown as typeof fetch;
+
+    const r = await provisionPendingCertificates(db, asc, clave, { fetchImpl: conFalla });
+
+    expect(r.provisioned).toHaveLength(1);
+    expect(r.failed).toHaveLength(1);
+  });
+
+  it("un comercio que falla espera antes de reintentar", async () => {
+    // Sin esto se reintentaría cada minuto contra una API con rate limit, y el
+    // cupo que se gasta ahí lo pagan los comercios que sí se pueden provisionar.
+    const rompe = (async () => new Response("no", { status: 500 })) as unknown as typeof fetch;
+    const ahora = new Date("2026-09-03T12:00:00Z");
+
+    const r = await provisionPendingCertificates(db, asc, clave, {
+      fetchImpl: rompe,
+      now: () => ahora,
+    });
+    expect(r.failed).toHaveLength(1);
+
+    const [fila] = await rows<{ attempts: number; last_error: string; next_attempt_at: Date }>(
+      db.drizzle,
+      sql`SELECT attempts, last_error, next_attempt_at FROM pass_provision_attempt`,
+    );
+    expect(fila!.attempts).toBe(1);
+    expect(fila!.last_error).toBeTruthy();
+    expect(new Date(fila!.next_attempt_at).getTime()).toBeGreaterThan(ahora.getTime());
+
+    // En la vuelta inmediata ni se lo mira.
+    const { fetchImpl, llamadas } = apple();
+    const segunda = await provisionPendingCertificates(db, asc, clave, {
+      fetchImpl,
+      now: () => ahora,
+    });
+    expect(segunda.provisioned).toEqual([]);
+    expect(llamadas).toHaveLength(0);
+  });
+
+  it("la tanda tiene tope: no vacía la cuenta de Apple de una", async () => {
+    await otroComercio("uno", "Uno");
+    await otroComercio("dos", "Dos");
+
+    const { fetchImpl } = apple();
+    const r = await provisionPendingCertificates(db, asc, clave, { fetchImpl, max: 2 });
+
+    expect(r.provisioned).toHaveLength(2);
+    expect(r.pending).toBeGreaterThan(0);
+  });
+
+  it("la espera crece y tiene techo", () => {
+    expect(retryDelayMs(1)).toBeLessThan(retryDelayMs(3));
+    expect(retryDelayMs(99)).toBe(6 * 60 * 60 * 1000);
   });
 });
