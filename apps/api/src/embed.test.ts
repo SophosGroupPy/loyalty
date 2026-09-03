@@ -1336,6 +1336,67 @@ describe("niveles y beneficios por nivel", () => {
     expect(res.json().error).toBe("nivel_desconocido");
   });
 
+  it("al borrar un nivel, limpia el candado de los beneficios que lo exigían", async () => {
+    // El bug que encontró la revisión: si el comercio borra o renombra un nivel,
+    // el beneficio que lo exigía queda con un candado que el canje no puede
+    // aplicar —se abre para todos, en silencio— y con un chip que miente. Al
+    // cambiar los niveles se limpia el candado huérfano.
+    await conNiveles();
+    await asEmbed(donJulio)("POST", "/embed/rewards", {
+      name: "Trago gratis",
+      cost: 10,
+      minTier: "Oro",
+    });
+
+    // El comercio deja solo Plata: "Oro" ya no existe.
+    await asEmbed(donJulio)("PUT", "/embed/program", {
+      kind: "points",
+      per: 1_000,
+      points: 1,
+      tiers: [{ name: "Plata", min: 100 }],
+    });
+
+    const beneficio = (await asEmbed(donJulio)("GET", "/embed/rewards")).json().rewards[0];
+    expect(beneficio.min_tier).toBeNull();
+
+    // Y el canje ya no queda trabado por un nivel fantasma: un cliente con saldo
+    // suficiente para el costo puede llevárselo.
+    const id = await nuevaTarjeta("0993900900");
+    await asProduct(elmenuToken)("POST", "/v1/events", {
+      merchant: "r-1",
+      idempotencyKey: "para-el-trago",
+      type: "order.paid",
+      amount: 50_000,
+      membership: { phone: "0993900900" },
+    });
+    const canje = await asProduct(elmenuToken)("POST", "/v1/redemptions", {
+      merchant: "r-1",
+      membership: { id },
+      rewardId: beneficio.id,
+      redeemedBy: "staff:1",
+    });
+    expect(canje.statusCode, canje.body).toBe(201);
+  });
+
+  it("no limpia el candado de un beneficio cuyo nivel sigue existiendo", async () => {
+    await conNiveles();
+    await asEmbed(donJulio)("POST", "/embed/rewards", { name: "Trago", cost: 10, minTier: "Oro" });
+
+    // Se edita otro aspecto del programa; Oro sigue en la lista.
+    await asEmbed(donJulio)("PUT", "/embed/program", {
+      kind: "points",
+      per: 2_000,
+      points: 1,
+      tiers: [
+        { name: "Plata", min: 100 },
+        { name: "Oro", min: 500, multiplier: 2 },
+      ],
+    });
+
+    const beneficio = (await asEmbed(donJulio)("GET", "/embed/rewards")).json().rewards[0];
+    expect(beneficio.min_tier).toBe("Oro");
+  });
+
   it("bloquea el canje si el cliente no alcanzó el nivel, y lo permite si sí", async () => {
     await conNiveles();
     await asEmbed(donJulio)("POST", "/embed/rewards", {

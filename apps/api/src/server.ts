@@ -2515,6 +2515,35 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     // de antes hasta la próxima compra. Se recalcula acá, y después se empuja el
     // cambio a los teléfonos igual que un cambio de diseño.
     await recomputeMemberTiers(db, merchant.id, config);
+
+    // Beneficios que apuntaban a un nivel que ya no existe —lo renombraron, lo
+    // borraron, o se apagaron los niveles— quedarían con un candado que el canje
+    // no puede aplicar (se abre para todos, en silencio) y con un chip "Solo Oro"
+    // que miente. Se limpia el candado huérfano: el beneficio queda abierto de
+    // forma explícita y visible, y el comercio puede volver a restringirlo desde
+    // Beneficios. No se intenta adivinar un renombre —"Oro" pasó a "Gold"— porque
+    // el cuerpo trae la lista nueva, no el mapeo; adivinar mal sería peor que
+    // dejar que el comercio lo reasigne a mano.
+    const nombresValidos =
+      config.kind === "points" && config.tiers ? config.tiers.map((t) => t.name) : [];
+    if (nombresValidos.length === 0) {
+      await rows(
+        db.drizzle,
+        sql`UPDATE reward SET min_tier = NULL
+            WHERE merchant_id = ${merchant.id} AND min_tier IS NOT NULL`,
+      );
+    } else {
+      await rows(
+        db.drizzle,
+        sql`UPDATE reward SET min_tier = NULL
+            WHERE merchant_id = ${merchant.id} AND min_tier IS NOT NULL
+              AND min_tier NOT IN (${sql.join(
+                nombresValidos.map((n) => sql`${n}`),
+                sql`, `,
+              )})`,
+      );
+    }
+
     await markMerchantPassesUpdated(db, merchant.id);
     refreshMerchantPassesInBackground(merchant.id);
 
