@@ -1142,11 +1142,11 @@ describe("guardar el diseño llega a las tarjetas ya emitidas", () => {
     });
     expect(res.statusCode, res.body).toBe(200);
 
-    const [{ id }] = await rows<{ id: string }>(
+    const [donJulio] = await rows<{ id: string }>(
       db.drizzle,
       sql`SELECT id FROM merchant WHERE slug = 'don-julio'`,
     );
-    expect(refreshGoogleClass).toHaveBeenCalledWith(id);
+    expect(refreshGoogleClass).toHaveBeenCalledWith(donJulio!.id);
 
     await server.close();
   });
@@ -1161,11 +1161,11 @@ describe("guardar el diseño llega a las tarjetas ya emitidas", () => {
       payload: disenoValido,
     });
 
-    const [{ id: donJulio }] = await rows<{ id: string }>(
+    const [donJulio] = await rows<{ id: string }>(
       db.drizzle,
       sql`SELECT id FROM merchant WHERE slug = 'don-julio'`,
     );
-    expect(refreshGoogleClass).toHaveBeenCalledWith(donJulio);
+    expect(refreshGoogleClass).toHaveBeenCalledWith(donJulio!.id);
     expect(refreshGoogleClass).toHaveBeenCalledTimes(1);
 
     await server.close();
