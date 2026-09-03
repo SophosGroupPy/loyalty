@@ -6,6 +6,7 @@
  */
 
 import type { CardDesign, MerchantIdentity, PassLocation } from "../google/types.js";
+import { mesYAnio } from "../format.js";
 import type {
   ApplePass,
   AppleWalletConfig,
@@ -88,8 +89,17 @@ export interface BuildPassInput {
    * suelto no dice nada cuando lo que importa es cuánto falta.
    */
   stampsTarget?: number;
+  /**
+   * Fecha de alta, en ISO. Se muestra como "Cliente desde <mes> <año>".
+   *
+   * Llena la última ranura de la tarjeta y comunica antigüedad, que en un
+   * programa de fidelidad es justo lo que se quiere reconocer. Una tarjeta con
+   * las cuatro ranuras usadas se ve terminada; una con dos, a medio hacer.
+   */
+  memberSince?: string;
   locations?: (PassLocation & { relevantText?: string })[];
 }
+
 
 export function buildStoreCard(input: BuildPassInput): ApplePass {
   const { design, merchant, config } = input;
@@ -113,26 +123,39 @@ export function buildStoreCard(input: BuildPassInput): ApplePass {
     },
   ];
 
-  const secondaryFields: PassField[] = input.tier
+  /**
+   * El nivel va arriba a la derecha, en la ranura de cabecera.
+   *
+   * Es la posición donde Air Europa pone "SUMA" y los bancos el tipo de tarjeta:
+   * el ojo la lee como un distintivo de estatus, que es exactamente lo que un
+   * nivel es. Antes iba en el cuerpo, compitiendo con el saldo; acá reconoce sin
+   * estorbar. Si el programa no tiene niveles, la ranura queda libre y Apple no
+   * dibuja nada.
+   */
+  const headerFields: PassField[] = input.tier
     ? [{ key: "nivel", label: "Nivel", value: input.tier }]
     : [];
 
   /**
-   * El nombre de la persona, arriba a la derecha.
+   * El nombre de la persona y su antigüedad, en el cuerpo.
    *
-   * Es lo que separa una tarjeta de un cupón: la vuelve suya. Va solo el primer
-   * nombre — la ranura es angosta y "María Fernanda Rodríguez de Ayala" se
-   * corta igual, pero cortado por Apple y con puntos suspensivos.
+   * Son las dos ranuras que separan una tarjeta de un cupón: la vuelven suya. Es
+   * la diferencia entre la tarjeta que se veía a medio hacer —solo un número
+   * sobre un fondo de color— y una que se siente completa, con las cuatro
+   * ranuras usadas.
+   *
+   * El nombre va entero, no solo el primero: acá hay ancho de sobra, y "Diego
+   * Castro Gonzales" es cómo la persona se reconoce. Apple lo corta si no entra.
    */
-  const headerFields: PassField[] = input.memberName?.trim()
-    ? [
-        {
-          key: "cliente",
-          label: "Cliente",
-          value: input.memberName.trim().split(/\s+/)[0]!,
-        },
-      ]
-    : [];
+  const secondaryFields: PassField[] = [];
+  if (input.memberName?.trim()) {
+    secondaryFields.push({ key: "cliente", label: "Cliente", value: input.memberName.trim() });
+  }
+
+  const desde = input.memberSince ? mesYAnio(input.memberSince) : null;
+  if (desde) {
+    secondaryFields.push({ key: "desde", label: "Cliente desde", value: desde });
+  }
 
   /**
    * En sellos el saldo se muestra como "3 de 10".

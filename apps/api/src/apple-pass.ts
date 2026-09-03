@@ -52,6 +52,7 @@ interface CardRow {
   program_kind: "points" | "stamps";
   program_config: { rewardAt?: number } | null;
   member_name: string | null;
+  issued_at: Date;
   content_updated_at: Date;
 }
 
@@ -182,6 +183,7 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
                    prod.name AS product_name,
                    p.kind AS program_kind, p.config AS program_config,
                    m.display_name AS member_name,
+                   m.issued_at,
                    COALESCE(pi.content_updated_at, m.issued_at) AS content_updated_at
             FROM membership m
             JOIN merchant mer ON mer.id = m.merchant_id
@@ -272,6 +274,7 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
         ...(card.tier ? { tier: card.tier } : {}),
         ...(card.member_name ? { memberName: card.member_name } : {}),
         ...(rewardAt > 0 ? { stampsTarget: rewardAt } : {}),
+        memberSince: new Date(card.issued_at).toISOString(),
         locations: locations.map((l) => ({
           latitude: l.latitude,
           longitude: l.longitude,

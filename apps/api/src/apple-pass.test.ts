@@ -361,7 +361,9 @@ describe("emisión del pase", () => {
     expect(pass.organizationName).toBe("Don Julio");
     expect(pass.teamIdentifier).toBe("3W23SYPG6H");
     expect(pass.storeCard.primaryFields[0].value).toBe(340);
-    expect(pass.storeCard.secondaryFields[0].value).toBe("Oro");
+    // El nivel vive en la cabecera, arriba a la derecha, como el estatus de una
+    // tarjeta de banco.
+    expect(pass.storeCard.headerFields[0].value).toBe("Oro");
   });
 
   it("el authenticationToken del pase emitido es el que valida el web service", async () => {
@@ -766,9 +768,9 @@ describe("tarjeta de sellos", () => {
     expect(antes.equals(despues)).toBe(false);
   });
 
-  it("pone el nombre del cliente arriba, solo el primero", async () => {
-    // Es lo que separa una tarjeta de un cupón. Y va solo el primer nombre: la
-    // ranura es angosta y Apple corta igual.
+  it("pone el nombre del cliente en el cuerpo, entero", async () => {
+    // Es lo que separa una tarjeta de un cupón: la vuelve suya. Va entero, no
+    // solo el primero — en el cuerpo hay ancho, y así se reconoce la persona.
     await cargarCertificado();
     await rows(
       db.drizzle,
@@ -777,14 +779,27 @@ describe("tarjeta de sellos", () => {
     );
 
     const pass = passJson(await pedirPase());
-    expect(pass.storeCard.headerFields[0].value).toBe("María");
+    const cliente = pass.storeCard.secondaryFields.find((f: any) => f.key === "cliente");
+    expect(cliente.value).toBe("María Fernanda Rodríguez");
   });
 
-  it("sin nombre cargado no deja la ranura vacía", async () => {
-    // Un campo con etiqueta y sin valor se ve peor que ningún campo.
+  it("sin nombre cargado no deja una ranura de cliente vacía", async () => {
+    // Un campo con etiqueta y sin valor se ve peor que ningún campo. El setup no
+    // carga display_name, así que no debe aparecer el campo "cliente".
     await cargarCertificado();
 
     const pass = passJson(await pedirPase());
-    expect(pass.storeCard.headerFields).toBeUndefined();
+    const cliente = pass.storeCard.secondaryFields?.find((f: any) => f.key === "cliente");
+    expect(cliente).toBeUndefined();
+  });
+
+  it("muestra la antigüedad como 'cliente desde'", async () => {
+    // Llena la cuarta ranura y reconoce lealtad, que es de lo que va un programa
+    // de fidelidad. La fecha de alta del setup cae en el mes en curso.
+    await cargarCertificado();
+
+    const pass = passJson(await pedirPase());
+    const desde = pass.storeCard.secondaryFields.find((f: any) => f.key === "desde");
+    expect(desde.value).toMatch(/^[a-zé]+ \d{4}$/);
   });
 });

@@ -182,6 +182,25 @@ describe("LoyaltyObject", () => {
     expect(buildLoyaltyObject({ ...base, active: false }).state).toBe("INACTIVE");
     expect(buildLoyaltyObject(base).state).toBe("ACTIVE");
   });
+
+  it("apila nivel y antigüedad como módulos de texto", () => {
+    // Es como Google llena la tarjeta: los mismos datos que del lado de Apple
+    // ocupan las ranuras extra, acá van apilados bajo los puntos.
+    const built = buildLoyaltyObject({
+      ...base,
+      tier: "Oro",
+      memberSince: "2021-08-15",
+    });
+
+    expect(built.textModulesData).toEqual([
+      { id: "nivel", header: "Nivel", body: "Oro" },
+      { id: "desde", header: "Cliente desde", body: "agosto 2021" },
+    ]);
+  });
+
+  it("no inventa módulos si no hay nivel ni antigüedad", () => {
+    expect(buildLoyaltyObject(base).textModulesData).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

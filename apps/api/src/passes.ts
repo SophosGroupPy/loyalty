@@ -90,6 +90,7 @@ interface CardRow {
   holder_name: string | null;
   balance: number;
   tier: string | null;
+  issued_at: Date;
   program_kind: "points" | "stamps";
 }
 
@@ -113,7 +114,7 @@ export function createPassService(
     const found = await rows<CardRow>(
       db.drizzle,
       sql`SELECT m.id AS membership_id, m.merchant_id, m.serial_number, m.balance, m.tier,
-                 m.display_name AS holder_name,
+                 m.display_name AS holder_name, m.issued_at,
                  mer.slug AS merchant_slug, mer.display_name, mer.legal_name, mer.design,
                  prod.name AS product_name,
                  p.kind AS program_kind
@@ -196,6 +197,7 @@ export function createPassService(
         balanceLabel: design.balanceLabel,
         attribution: design.attribution,
         tier: card.tier,
+        memberSince: new Date(card.issued_at).toISOString(),
       });
 
       // La clase se registra por API además de viajar en el link: el link basta

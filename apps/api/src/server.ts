@@ -2726,6 +2726,9 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       },
       merchantName: merchant.display_name,
       unit: esSellos ? "stamps" : "points",
+      // El objetivo del programa de sellos, para que el preview muestre la
+      // cantidad real de casilleros y no un número inventado.
+      stampsTarget: esSellos ? (program?.config?.rewardAt ?? 0) : 0,
     });
   });
 
@@ -3035,10 +3038,14 @@ export function createServer(opts: ServerOptions): FastifyInstance {
 
   async function activeProgram(
     merchantId: string,
-  ): Promise<{ id: string; kind: "points" | "stamps" } | null> {
-    const found = await rows<{ id: string; kind: "points" | "stamps" }>(
+  ): Promise<{ id: string; kind: "points" | "stamps"; config: { rewardAt?: number } | null } | null> {
+    const found = await rows<{
+      id: string;
+      kind: "points" | "stamps";
+      config: { rewardAt?: number } | null;
+    }>(
       db.drizzle,
-      sql`SELECT id, kind FROM program WHERE merchant_id = ${merchantId} AND status = 'active'`,
+      sql`SELECT id, kind, config FROM program WHERE merchant_id = ${merchantId} AND status = 'active'`,
     );
     return found[0] ?? null;
   }

@@ -14,10 +14,12 @@ import {
   STATE_ACTIVE,
   STATE_INACTIVE,
 } from "./enums.js";
+import { mesYAnio } from "../format.js";
 import type {
   CardDesign,
   GoogleLoyaltyClass,
   GoogleLoyaltyObject,
+  GoogleTextModule,
   MerchantIdentity,
   PassLocation,
   PassMessage,
@@ -113,6 +115,8 @@ export interface BuildObjectInput {
   /** Línea debajo del QR. Ver `CardDesign.attribution`. */
   attribution?: string;
   tier?: string | null;
+  /** Fecha de alta en ISO. Se muestra como un módulo "Cliente desde <mes> <año>". */
+  memberSince?: string | null;
   messages?: PassMessage[];
   active?: boolean;
   /**
@@ -152,9 +156,13 @@ export function buildLoyaltyObject(input: BuildObjectInput): GoogleLoyaltyObject
 
   if (input.accountName) object.accountName = input.accountName;
 
-  if (input.tier) {
-    object.textModulesData = [{ id: "nivel", header: "Nivel", body: input.tier }];
-  }
+  // Nivel y antigüedad, como módulos de texto. Google los apila bajo los puntos:
+  // llenan la tarjeta igual que las ranuras extra del lado de Apple.
+  const modulos: GoogleTextModule[] = [];
+  if (input.tier) modulos.push({ id: "nivel", header: "Nivel", body: input.tier });
+  const desde = input.memberSince ? mesYAnio(input.memberSince) : null;
+  if (desde) modulos.push({ id: "desde", header: "Cliente desde", body: desde });
+  if (modulos.length) object.textModulesData = modulos;
 
   if (input.messages?.length) {
     object.messages = input.messages.map((message) => ({
