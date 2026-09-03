@@ -79,6 +79,15 @@ export interface BuildPassInput {
   tier?: string;
   /** Último mensaje mostrado en el campo de novedades. */
   news?: string;
+  /** Nombre de la persona, como lo conoce este comercio. Va arriba a la derecha. */
+  memberName?: string;
+  /**
+   * Sellos que pide el premio. Presente solo en programas de sellos.
+   *
+   * Cambia el frente de la tarjeta: el saldo pasa de "3" a "3 de 10". Un número
+   * suelto no dice nada cuando lo que importa es cuánto falta.
+   */
+  stampsTarget?: number;
   locations?: (PassLocation & { relevantText?: string })[];
 }
 
@@ -108,6 +117,39 @@ export function buildStoreCard(input: BuildPassInput): ApplePass {
     ? [{ key: "nivel", label: "Nivel", value: input.tier }]
     : [];
 
+  /**
+   * El nombre de la persona, arriba a la derecha.
+   *
+   * Es lo que separa una tarjeta de un cupón: la vuelve suya. Va solo el primer
+   * nombre — la ranura es angosta y "María Fernanda Rodríguez de Ayala" se
+   * corta igual, pero cortado por Apple y con puntos suspensivos.
+   */
+  const headerFields: PassField[] = input.memberName?.trim()
+    ? [
+        {
+          key: "cliente",
+          label: "Cliente",
+          value: input.memberName.trim().split(/\s+/)[0]!,
+        },
+      ]
+    : [];
+
+  /**
+   * En sellos el saldo se muestra como "3 de 10".
+   *
+   * El número solo obliga a recordar cuántos hacen falta, y nadie lo recuerda.
+   * Con el objetivo al lado, la tarjeta contesta sola la única pregunta que la
+   * persona se hace cuando la abre: cuánto me falta.
+   */
+  const saldo: PassField =
+    input.stampsTarget && input.stampsTarget > 0
+      ? {
+          key: "saldo",
+          label: design.balanceLabel,
+          value: `${input.balance} de ${input.stampsTarget}`,
+        }
+      : { key: "saldo", label: design.balanceLabel, value: input.balance };
+
   const pass: ApplePass = {
     formatVersion: 1,
     passTypeIdentifier: passTypeIdFor(merchant.slug),
@@ -131,9 +173,8 @@ export function buildStoreCard(input: BuildPassInput): ApplePass {
     webServiceURL: `${config.webServiceURL.replace(/\/+$/, "")}/apple`,
     authenticationToken: input.authenticationToken,
     storeCard: {
-      primaryFields: [
-        { key: "saldo", label: design.balanceLabel, value: input.balance },
-      ],
+      ...(headerFields.length > 0 ? { headerFields } : {}),
+      primaryFields: [saldo],
       ...(secondaryFields.length > 0 ? { secondaryFields } : {}),
       backFields,
     },

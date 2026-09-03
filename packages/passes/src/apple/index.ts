@@ -40,5 +40,14 @@ export {
 } from "./resize.js";
 export type { AppleImages } from "./resize.js";
 
+export {
+  stampStrip,
+  esOscuro,
+  STRIP_WIDTH,
+  STRIP_HEIGHT,
+  MAX_STAMPS_DRAWN,
+} from "./stamps.js";
+export type { StampStripInput } from "./stamps.js";
+
 export { createAscClient, derToPem, AscError } from "./asc.js";
 export type { AscClient, AscConfig, CertificateResource, PassTypeIdResource } from "./asc.js";

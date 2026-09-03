@@ -11,6 +11,7 @@ import { rows, type Db } from "@sophos/db";
 import {
   APPLE_STRIP_PX,
   shrinkPng,
+  stampStrip,
   appleImagesFrom,
   buildPkpass,
   buildStoreCard,
@@ -49,6 +50,8 @@ interface CardRow {
   balance: number;
   tier: string | null;
   program_kind: "points" | "stamps";
+  program_config: { rewardAt?: number } | null;
+  member_name: string | null;
   content_updated_at: Date;
 }
 
@@ -177,7 +180,8 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
         sql`SELECT m.id AS membership_id, m.merchant_id, m.serial_number, m.balance, m.tier,
                    mer.slug AS merchant_slug, mer.display_name, mer.legal_name, mer.design,
                    prod.name AS product_name,
-                   p.kind AS program_kind,
+                   p.kind AS program_kind, p.config AS program_config,
+                   m.display_name AS member_name,
                    COALESCE(pi.content_updated_at, m.issued_at) AS content_updated_at
             FROM membership m
             JOIN merchant mer ON mer.id = m.merchant_id
@@ -223,6 +227,37 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
 
       const { images } = await loadImages(design);
 
+      // La banda de un programa de sellos se **dibuja**, no se sube.
+      //
+      // Los sellos tienen que verse como casilleros, y Apple no deja dibujar
+      // nada: la única superficie libre del pase es esta imagen. Así que la foto
+      // que cargó el comercio pasa a ser el fondo y los sellos se rinden encima,
+      // de nuevo en cada descarga — que es también cada vez que el saldo cambia.
+      //
+      // Un programa de puntos no lleva casilleros: ahí la foto va tal cual, que
+      // es lo que ya hacía `loadImages`.
+      const rewardAt =
+        card.program_kind === "stamps" ? (card.program_config?.rewardAt ?? 0) : 0;
+
+      if (card.program_kind === "stamps") {
+        if (rewardAt > 0) {
+          try {
+            images["strip.png"] = stampStrip({
+              total: rewardAt,
+              earned: card.balance,
+              background: images["strip.png"] ?? null,
+              backgroundColor: design.backgroundColor,
+              // El sello lleno usa el color del texto, que es el que el comercio
+              // ya eligió para que contraste con su fondo.
+              ...(design.foregroundColor ? { accentColor: design.foregroundColor } : {}),
+            });
+          } catch {
+            // Se deja la banda que hubiera: una tarjeta sin casilleros es peor
+            // que una con casilleros, pero mucho mejor que ninguna tarjeta.
+          }
+        }
+      }
+
       const pass = buildStoreCard({
         design,
         merchant: {
@@ -235,6 +270,8 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
         authenticationToken: passAuthToken(card.serial_number, opts.signingKey),
         balance: card.balance,
         ...(card.tier ? { tier: card.tier } : {}),
+        ...(card.member_name ? { memberName: card.member_name } : {}),
+        ...(rewardAt > 0 ? { stampsTarget: rewardAt } : {}),
         locations: locations.map((l) => ({
           latitude: l.latitude,
           longitude: l.longitude,

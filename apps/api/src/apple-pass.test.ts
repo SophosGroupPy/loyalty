@@ -705,3 +705,86 @@ describe("indicadores de salud", () => {
     expect(res.json().passes.drifted).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe("tarjeta de sellos", () => {
+  /** Convierte el programa del comercio a sellos, con premio a los N. */
+  async function programaDeSellos(rewardAt: number): Promise<void> {
+    await rows(
+      db.drizzle,
+      sql`UPDATE program SET kind = 'stamps',
+              config = ${JSON.stringify({ kind: "stamps", earn: [], rewardAt })}::jsonb
+          WHERE merchant_id = ${merchantId}`,
+    );
+  }
+
+  /** Lee el pass.json del `.pkpass` que devolvió la API. */
+  function passJson(res: { rawPayload: Buffer }): any {
+    return JSON.parse(extraer(res, "pass.json").toString("utf8"));
+  }
+
+  it("dibuja la banda de sellos aunque el comercio no haya subido foto", async () => {
+    // Es el caso normal al arrancar, y es justo donde antes quedaba el hueco
+    // vacío que hacía que la tarjeta pareciera sin terminar.
+    await cargarCertificado();
+    await programaDeSellos(6);
+
+    const res = await pedirPase();
+    expect(res.statusCode).toBe(200);
+    expect(listar(res)).toContain("strip.png");
+  });
+
+  it("el saldo se muestra contra el objetivo, no solo", async () => {
+    // "340" no dice nada; "340 de 6" sí. El saldo de este comercio en el setup
+    // es 340, así que sirve igual para ver el formato.
+    await cargarCertificado();
+    await programaDeSellos(6);
+
+    const pass = passJson(await pedirPase());
+    expect(pass.storeCard.primaryFields[0].value).toBe("340 de 6");
+  });
+
+  it("un programa de puntos NO lleva el objetivo ni banda dibujada", async () => {
+    // El contraste es el punto: las dos mecánicas tienen que verse distintas.
+    await cargarCertificado();
+
+    const pass = passJson(await pedirPase());
+    expect(pass.storeCard.primaryFields[0].value).toBe(340);
+    expect(listar(await pedirPase())).not.toContain("strip.png");
+  });
+
+  it("la banda cambia cuando cambia el saldo", async () => {
+    await cargarCertificado();
+    await programaDeSellos(6);
+
+    const antes = extraer(await pedirPase(), "strip.png");
+    await rows(db.drizzle, sql`UPDATE membership SET balance = 2 WHERE id IN
+      (SELECT id FROM membership WHERE serial_number = ${SERIAL})`);
+    const despues = extraer(await pedirPase(), "strip.png");
+
+    expect(antes.equals(despues)).toBe(false);
+  });
+
+  it("pone el nombre del cliente arriba, solo el primero", async () => {
+    // Es lo que separa una tarjeta de un cupón. Y va solo el primer nombre: la
+    // ranura es angosta y Apple corta igual.
+    await cargarCertificado();
+    await rows(
+      db.drizzle,
+      sql`UPDATE membership SET display_name = 'María Fernanda Rodríguez'
+          WHERE serial_number = ${SERIAL}`,
+    );
+
+    const pass = passJson(await pedirPase());
+    expect(pass.storeCard.headerFields[0].value).toBe("María");
+  });
+
+  it("sin nombre cargado no deja la ranura vacía", async () => {
+    // Un campo con etiqueta y sin valor se ve peor que ningún campo.
+    await cargarCertificado();
+
+    const pass = passJson(await pedirPase());
+    expect(pass.storeCard.headerFields).toBeUndefined();
+  });
+});
