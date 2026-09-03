@@ -679,3 +679,45 @@ export async function reverseEvent(
     };
   });
 }
+
+/**
+ * Pone al día el nivel guardado de todas las tarjetas de un comercio.
+ *
+ * `membership.tier` es una proyección: normalmente se recalcula en cada
+ * movimiento del ledger, sobre el saldo resultante. Pero cuando el comercio
+ * cambia los NIVELES —agrega uno, mueve un umbral, los apaga— no hay ningún
+ * movimiento, así que el nivel guardado queda viejo. Una tarjeta que con la
+ * config nueva calificaría para Oro seguiría mostrando el nivel anterior (o
+ * ninguno) hasta la próxima compra del cliente. Esto lo corrige de una.
+ *
+ * Es un solo UPDATE con un CASE armado desde los niveles ordenados por umbral
+ * descendente: la primera condición que cumple el saldo gana, que es
+ * exactamente la semántica de `tierFor`. Sin niveles, todo queda en null.
+ */
+export async function recomputeMemberTiers(
+  db: Db,
+  merchantId: string,
+  config: ProgramConfig,
+): Promise<void> {
+  const niveles =
+    config.kind === "points" && config.tiers ? [...config.tiers] : [];
+
+  if (niveles.length === 0) {
+    await rows(
+      db.drizzle,
+      sql`UPDATE membership SET tier = NULL
+          WHERE merchant_id = ${merchantId} AND status = 'active' AND tier IS NOT NULL`,
+    );
+    return;
+  }
+
+  niveles.sort((a, b) => b.min - a.min);
+  const whens = niveles.map((t) => sql`WHEN balance >= ${t.min} THEN ${t.name}`);
+
+  await rows(
+    db.drizzle,
+    sql`UPDATE membership
+        SET tier = CASE ${sql.join(whens, sql` `)} ELSE NULL END
+        WHERE merchant_id = ${merchantId} AND status = 'active'`,
+  );
+}

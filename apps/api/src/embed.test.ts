@@ -1205,6 +1205,57 @@ describe("niveles y beneficios por nivel", () => {
     return card.json().membershipId;
   }
 
+  /** Nivel guardado de una tarjeta, leído como lo lee el POS. */
+  async function nivelDe(phone: string): Promise<string | null> {
+    const res = await asProduct(elmenuToken)(
+      "GET",
+      `/v1/memberships/lookup?merchant=r-1&phone=${phone}`,
+    );
+    return res.json().tier ?? null;
+  }
+
+  it("agregar niveles pone al día el nivel de las tarjetas que ya existen", async () => {
+    // El bug reportado: el comercio agrega niveles y la tarjeta de un cliente
+    // que ya calificaría no muestra el nivel. El nivel guardado solo se
+    // recalcula al mover puntos, y cambiar la config no mueve nada.
+    await asEmbed(donJulio)("PUT", "/embed/program", { kind: "points", per: 1_000, points: 1 });
+    await nuevaTarjeta("0993300400");
+    await asProduct(elmenuToken)("POST", "/v1/events", {
+      merchant: "r-1",
+      idempotencyKey: "junta-300",
+      type: "order.paid",
+      amount: 300_000, // 300 puntos
+      membership: { phone: "0993300400" },
+    });
+    expect(await nivelDe("0993300400")).toBeNull();
+
+    // El comercio agrega niveles: 300 puntos cae en Plata (min 100). Sin ninguna
+    // compra nueva, la tarjeta ya lo refleja.
+    await conNiveles();
+    expect(await nivelDe("0993300400")).toBe("Plata");
+  });
+
+  it("apagar los niveles borra el nivel guardado de las tarjetas", async () => {
+    await conNiveles();
+    await nuevaTarjeta("0993500600");
+    await asProduct(elmenuToken)("POST", "/v1/events", {
+      merchant: "r-1",
+      idempotencyKey: "sube-plata",
+      type: "order.paid",
+      amount: 200_000,
+      membership: { phone: "0993500600" },
+    });
+    expect(await nivelDe("0993500600")).toBe("Plata");
+
+    await asEmbed(donJulio)("PUT", "/embed/program", {
+      kind: "points",
+      per: 1_000,
+      points: 1,
+      tiers: [],
+    });
+    expect(await nivelDe("0993500600")).toBeNull();
+  });
+
   it("guarda los niveles y los devuelve", async () => {
     await conNiveles();
     const config = (await asEmbed(donJulio)("GET", "/embed/program")).json().config;

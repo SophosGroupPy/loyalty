@@ -64,7 +64,13 @@ import {
   type ResolvedMerchant,
   type TokenClaims,
 } from "./auth.js";
-import { applyEvent, auditAllBalances, redeem, reverseEvent } from "./ledger.js";
+import {
+  applyEvent,
+  auditAllBalances,
+  recomputeMemberTiers,
+  redeem,
+  reverseEvent,
+} from "./ledger.js";
 import { enroll, lookup, normalizePhone } from "./memberships.js";
 import {
   createConsoleOtpSender,
@@ -2502,6 +2508,15 @@ export function createServer(opts: ServerOptions): FastifyInstance {
              SET kind = ${parsed.data.kind}, config = ${JSON.stringify(config)}::jsonb
            WHERE id = ${program.id}`,
     );
+
+    // Cambiar los niveles no es un movimiento del ledger, así que el nivel
+    // guardado de cada tarjeta —lo que la tarjeta muestra— queda viejo si no se
+    // recalcula: una tarjeta que ahora calificaría para Oro seguiría en el nivel
+    // de antes hasta la próxima compra. Se recalcula acá, y después se empuja el
+    // cambio a los teléfonos igual que un cambio de diseño.
+    await recomputeMemberTiers(db, merchant.id, config);
+    await markMerchantPassesUpdated(db, merchant.id);
+    refreshMerchantPassesInBackground(merchant.id);
 
     return reply.send({ kind: parsed.data.kind, config });
   });
