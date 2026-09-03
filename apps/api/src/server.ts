@@ -1088,8 +1088,11 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     });
 
     if (!result.ok) {
-      const status = result.reason === "insufficient_balance" ? 409 : 404;
-      return reply.code(status).send({ error: result.reason, ...result });
+      // Saldo insuficiente y nivel insuficiente son la misma clase de rechazo —
+      // "todavía no": la tarjeta existe y el beneficio existe, falta que el
+      // cliente llegue. 409. "No existe" (tarjeta o beneficio) es 404.
+      const todavia = result.reason === "insufficient_balance" || result.reason === "tier_locked";
+      return reply.code(todavia ? 409 : 404).send({ error: result.reason, ...result });
     }
 
     syncPassInBackground(membershipId);
@@ -2372,6 +2375,23 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       per: z.number().int().positive(),
       points: z.number().int().positive(),
       minTotal: z.number().int().nonnegative().optional(),
+      /**
+       * Niveles del programa. Opcional: un programa de puntos puede no tener.
+       *
+       * `undefined` (el campo no viaja) preserva los niveles que ya había —así la
+       * pantalla de "cuánto se gana" no los pisa. Un array vacío los borra: es el
+       * "apagar niveles". `multiplier` ausente = el nivel es solo estatus.
+       */
+      tiers: z
+        .array(
+          z.object({
+            name: z.string().min(1).max(20),
+            min: z.number().int().nonnegative(),
+            multiplier: z.number().positive().max(10).optional(),
+          }),
+        )
+        .max(6)
+        .optional(),
     }),
     z.object({
       kind: z.literal("stamps"),
@@ -2452,12 +2472,29 @@ export function createServer(opts: ServerOptions): FastifyInstance {
 
     const earn = [nuevaBase, ...conservadas];
 
-    // Se preserva todo lo demás: topes, vencimiento, huso, niveles y
-    // notificaciones los administran otras pantallas.
+    // Se preserva todo lo demás: topes, vencimiento, huso y notificaciones los
+    // administran otras pantallas. Los niveles se editan desde acá cuando vienen
+    // en el cuerpo, y se preservan cuando no.
     const config: ProgramConfig =
       parsed.data.kind === "points"
         ? { ...(base as object), kind: "points", earn }
         : { ...(base as object), kind: "stamps", earn, rewardAt: parsed.data.rewardAt };
+
+    if (parsed.data.kind === "points" && parsed.data.tiers !== undefined) {
+      const pc = config as { tiers?: unknown };
+      // Array vacío = apagar niveles: se borra la clave en vez de dejar `[]`,
+      // que el motor trata igual pero ensucia el config guardado.
+      if (parsed.data.tiers.length) pc.tiers = parsed.data.tiers;
+      else delete pc.tiers;
+    }
+
+    // Se valida el config completo antes de escribir: es mucho más barato
+    // rechazar dos niveles con el mismo umbral acá que descubrirlo cuando un
+    // cliente reclama por qué nunca llegó a Oro.
+    const errores = validateConfig(config);
+    if (errores.length) {
+      return reply.code(400).send({ error: "config_invalida", detalles: errores });
+    }
 
     await rows(
       db.drizzle,
@@ -2840,12 +2877,13 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       name: string;
       cost: number;
       terms: string | null;
+      min_tier: string | null;
       status: string;
       redemptions: number;
       can_afford: number;
     }>(
       db.drizzle,
-      sql`SELECT r.id, r.name, r.cost, r.terms, r.status,
+      sql`SELECT r.id, r.name, r.cost, r.terms, r.min_tier, r.status,
                  (SELECT count(*)::int FROM redemption rd WHERE rd.reward_id = r.id) AS redemptions,
                  (SELECT count(*)::int FROM membership m
                    WHERE m.merchant_id = r.merchant_id AND m.status = 'active'
@@ -2864,14 +2902,33 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     return reply.send({ rewards, members: totals[0]?.members ?? 0 });
   });
 
+  /**
+   * Comprueba que un nivel exigido por un beneficio exista en el programa.
+   *
+   * `null`/ausente = sin restricción, siempre válido. Un nombre que no está en
+   * la config del programa se rechaza acá y no al canjear: es mucho mejor que el
+   * comercio se entere al guardar el beneficio que cuando un cliente no lo puede
+   * canjear.
+   */
+  function nivelValido(
+    program: { kind: "points" | "stamps"; config: { tiers?: { name: string }[] } | null },
+    minTier: string | null | undefined,
+  ): boolean {
+    if (!minTier) return true;
+    if (program.kind !== "points") return false;
+    return Boolean(program.config?.tiers?.some((t) => t.name === minTier));
+  }
+
+  const embedRewardBody = z.object({
+    name: z.string().min(1).max(80),
+    cost: z.number().int().positive(),
+    terms: z.string().max(200).optional(),
+    /** Nivel mínimo para canjear. Null o ausente = cualquiera. */
+    minTier: z.string().max(20).nullable().optional(),
+  });
+
   app.post("/embed/rewards", async (request, reply) => {
-    const parsed = z
-      .object({
-        name: z.string().min(1).max(80),
-        cost: z.number().int().positive(),
-        terms: z.string().max(200).optional(),
-      })
-      .safeParse(request.body);
+    const parsed = embedRewardBody.safeParse(request.body);
     if (!parsed.success) return badRequest(reply, parsed.error.issues);
 
     const merchant = await embedMerchant(request);
@@ -2880,11 +2937,19 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     const program = await activeProgram(merchant.id);
     if (!program) return reply.code(409).send({ error: "no_active_program" });
 
+    if (!nivelValido(program, parsed.data.minTier)) {
+      return reply.code(400).send({
+        error: "nivel_desconocido",
+        message: "El beneficio exige un nivel que el programa no tiene configurado.",
+      });
+    }
+
     const created = await rows<{ id: string }>(
       db.drizzle,
-      sql`INSERT INTO reward (program_id, merchant_id, name, cost, terms, status)
+      sql`INSERT INTO reward (program_id, merchant_id, name, cost, terms, min_tier, status)
           VALUES (${program.id}, ${merchant.id}, ${parsed.data.name},
-                  ${parsed.data.cost}, ${parsed.data.terms ?? null}, 'active')
+                  ${parsed.data.cost}, ${parsed.data.terms ?? null},
+                  ${parsed.data.minTier ?? null}, 'active')
           RETURNING id`,
     );
 
@@ -2900,16 +2965,40 @@ export function createServer(opts: ServerOptions): FastifyInstance {
    */
   app.put<{ Params: { id: string } }>("/embed/rewards/:id", async (request, reply) => {
     const parsed = z
-      .object({ status: z.enum(["active", "archived"]) })
+      .object({
+        status: z.enum(["active", "archived"]).optional(),
+        // `null` explícito saca el candado de nivel; ausente lo deja como está.
+        minTier: z.string().max(20).nullable().optional(),
+      })
+      .refine((b) => b.status !== undefined || b.minTier !== undefined, {
+        message: "No hay nada que actualizar.",
+      })
       .safeParse(request.body);
     if (!parsed.success) return badRequest(reply, parsed.error.issues);
 
     const merchant = await embedMerchant(request);
     if (!merchant) return reply.code(401).send({ error: "unauthorized" });
 
+    if (parsed.data.minTier !== undefined) {
+      const program = await activeProgram(merchant.id);
+      if (!program) return reply.code(409).send({ error: "no_active_program" });
+      if (!nivelValido(program, parsed.data.minTier)) {
+        return reply.code(400).send({
+          error: "nivel_desconocido",
+          message: "El beneficio exige un nivel que el programa no tiene configurado.",
+        });
+      }
+    }
+
+    // Se arma el SET solo con lo que vino: un update parcial no puede pisar con
+    // null el campo que quien llama no mandó.
+    const sets = [];
+    if (parsed.data.status !== undefined) sets.push(sql`status = ${parsed.data.status}`);
+    if (parsed.data.minTier !== undefined) sets.push(sql`min_tier = ${parsed.data.minTier}`);
+
     const updated = await rows<{ id: string }>(
       db.drizzle,
-      sql`UPDATE reward SET status = ${parsed.data.status}
+      sql`UPDATE reward SET ${sql.join(sets, sql`, `)}
           WHERE id = ${request.params.id} AND merchant_id = ${merchant.id}
           RETURNING id`,
     );
@@ -3092,13 +3181,15 @@ export function createServer(opts: ServerOptions): FastifyInstance {
   // Helpers con acceso a la conexión
   // --------------------------------------------------------------------------
 
-  async function activeProgram(
-    merchantId: string,
-  ): Promise<{ id: string; kind: "points" | "stamps"; config: { rewardAt?: number } | null } | null> {
+  async function activeProgram(merchantId: string): Promise<{
+    id: string;
+    kind: "points" | "stamps";
+    config: { rewardAt?: number; tiers?: { name: string }[] } | null;
+  } | null> {
     const found = await rows<{
       id: string;
       kind: "points" | "stamps";
-      config: { rewardAt?: number } | null;
+      config: { rewardAt?: number; tiers?: { name: string }[] } | null;
     }>(
       db.drizzle,
       sql`SELECT id, kind, config FROM program WHERE merchant_id = ${merchantId} AND status = 'active'`,

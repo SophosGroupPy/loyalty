@@ -83,7 +83,15 @@ export function evaluateEarn(
     }
   });
 
-  const afterMultiplier = Math.floor(base * multiplier);
+  // Multiplicador del nivel del cliente, según el saldo con el que llega al
+  // evento —no el resultante. Se combina con el de horario multiplicándose: un
+  // cliente Oro (2x) en el happy hour (2x) suma 4x. Es una decisión de diseño y
+  // no un accidente: son dos incentivos distintos —lealtad y franja— y sumarlos
+  // o quedarse con el mayor le sacaría sentido a combinar los dos.
+  const nivel = tierFor(config, context.currentBalance);
+  const tierMultiplier = nivel?.multiplier && nivel.multiplier > 0 ? nivel.multiplier : 1;
+
+  const afterMultiplier = Math.floor(base * multiplier * tierMultiplier);
 
   let amount = afterMultiplier;
   let cappedBy: EarnResult["trace"]["cappedBy"] = null;
@@ -108,7 +116,8 @@ export function evaluateEarn(
     unit,
     trace: {
       base,
-      multiplier,
+      multiplier: multiplier * tierMultiplier,
+      tierMultiplier,
       afterMultiplier,
       cappedBy,
       matchedRules,
@@ -210,9 +219,23 @@ export function validateConfig(config: ProgramConfig): string[] {
 
   if (config.kind === "points" && config.tiers) {
     const names = new Set<string>();
+    const minimos = new Set<number>();
     for (const tier of config.tiers) {
+      if (!tier.name.trim()) errors.push("Un nivel no puede tener nombre vacío.");
       if (names.has(tier.name)) errors.push(`Nivel duplicado: ${tier.name}`);
       names.add(tier.name);
+
+      if (!Number.isInteger(tier.min) || tier.min < 0) {
+        errors.push(`El nivel ${tier.name} necesita un mínimo entero y no negativo.`);
+      }
+      // Dos niveles con el mismo umbral son indistinguibles: uno nunca se
+      // alcanza. Es un error de configuración, no una preferencia.
+      if (minimos.has(tier.min)) errors.push(`Dos niveles arrancan en ${tier.min}.`);
+      minimos.add(tier.min);
+
+      if (tier.multiplier !== undefined && !(tier.multiplier > 0)) {
+        errors.push(`El multiplicador del nivel ${tier.name} tiene que ser mayor a cero.`);
+      }
     }
   }
 

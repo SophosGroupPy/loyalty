@@ -1,0 +1,12 @@
+-- ----------------------------------------------------------------------------
+-- Beneficios desbloqueables por nivel.
+--
+-- Un beneficio puede exigir un nivel mínimo: el "trago gratis" solo para Oro.
+-- Es el nombre del nivel, no su umbral: el comercio piensa en "Oro", y el
+-- umbral se resuelve contra la configuración del programa al momento de canjear.
+--
+-- Null = sin restricción, que es como se comportaban todos los beneficios hasta
+-- ahora. Por eso no lleva default distinto: la columna nueva no cambia nada de
+-- lo ya emitido.
+-- ----------------------------------------------------------------------------
+ALTER TABLE reward ADD COLUMN IF NOT EXISTS min_tier text;

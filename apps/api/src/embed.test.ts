@@ -1171,3 +1171,165 @@ describe("guardar el diseño llega a las tarjetas ya emitidas", () => {
     await server.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe("niveles y beneficios por nivel", () => {
+  let donJulio: string;
+
+  beforeEach(async () => {
+    const minted = await asProduct(elmenuToken)("POST", "/v1/embed-tokens", { merchant: "r-1" });
+    donJulio = minted.json().token;
+  });
+
+  /** Programa de puntos generoso con Oro 2x, para no tener que gastar millones. */
+  async function conNiveles() {
+    const res = await asEmbed(donJulio)("PUT", "/embed/program", {
+      kind: "points",
+      per: 1_000,
+      points: 1,
+      tiers: [
+        { name: "Plata", min: 100 },
+        { name: "Oro", min: 500, multiplier: 2 },
+      ],
+    });
+    expect(res.statusCode, res.body).toBe(200);
+  }
+
+  async function nuevaTarjeta(phone: string): Promise<string> {
+    const card = await asProduct(elmenuToken)("POST", "/v1/memberships", {
+      merchant: "r-1",
+      phone,
+      phoneVerified: true,
+    });
+    return card.json().membershipId;
+  }
+
+  it("guarda los niveles y los devuelve", async () => {
+    await conNiveles();
+    const config = (await asEmbed(donJulio)("GET", "/embed/program")).json().config;
+    expect(config.tiers).toEqual([
+      { name: "Plata", min: 100 },
+      { name: "Oro", min: 500, multiplier: 2 },
+    ]);
+  });
+
+  it("rechaza dos niveles con el mismo umbral", async () => {
+    const res = await asEmbed(donJulio)("PUT", "/embed/program", {
+      kind: "points",
+      per: 1_000,
+      points: 1,
+      tiers: [
+        { name: "Plata", min: 100 },
+        { name: "Bronce", min: 100 },
+      ],
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("config_invalida");
+  });
+
+  it("editar la regla de acumulación no borra los niveles", async () => {
+    await conNiveles();
+    // Un guardado desde 'cuánto se gana', sin mandar tiers.
+    await asEmbed(donJulio)("PUT", "/embed/program", { kind: "points", per: 2_000, points: 1 });
+    const config = (await asEmbed(donJulio)("GET", "/embed/program")).json().config;
+    expect(config.tiers).toHaveLength(2);
+  });
+
+  it("mandar tiers vacío apaga los niveles", async () => {
+    await conNiveles();
+    await asEmbed(donJulio)("PUT", "/embed/program", {
+      kind: "points",
+      per: 1_000,
+      points: 1,
+      tiers: [],
+    });
+    const config = (await asEmbed(donJulio)("GET", "/embed/program")).json().config;
+    expect(config.tiers).toBeUndefined();
+  });
+
+  it("un cliente en el nivel con multiplicador acumula el doble", async () => {
+    await conNiveles();
+    const id = await nuevaTarjeta("0993100200");
+
+    // Lo lleva a Oro: 600.000 / 1.000 = 600 puntos. El nivel se mide sobre el
+    // saldo previo (0), así que este evento todavía va a 1x.
+    const e1 = await asProduct(elmenuToken)("POST", "/v1/events", {
+      merchant: "r-1",
+      idempotencyKey: "sube-a-oro",
+      type: "order.paid",
+      amount: 600_000,
+      membership: { id },
+    });
+    expect(e1.json().balance).toBe(600);
+
+    // Ahora ya es Oro: este consumo de 10.000 (base 10) suma 20, no 10.
+    const e2 = await asProduct(elmenuToken)("POST", "/v1/events", {
+      merchant: "r-1",
+      idempotencyKey: "ya-es-oro",
+      type: "order.paid",
+      amount: 10_000,
+      membership: { id },
+    });
+    expect(e2.json().balance).toBe(620);
+  });
+
+  it("no deja crear un beneficio con un nivel que no existe", async () => {
+    await conNiveles();
+    const res = await asEmbed(donJulio)("POST", "/embed/rewards", {
+      name: "Trago gratis",
+      cost: 10,
+      minTier: "Platino", // no está configurado
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("nivel_desconocido");
+  });
+
+  it("bloquea el canje si el cliente no alcanzó el nivel, y lo permite si sí", async () => {
+    await conNiveles();
+    await asEmbed(donJulio)("POST", "/embed/rewards", {
+      name: "Trago gratis",
+      cost: 10,
+      minTier: "Oro",
+    });
+    const rewardId = (await asEmbed(donJulio)("GET", "/embed/rewards")).json().rewards[0].id;
+
+    // Cliente con saldo suficiente para el costo pero por debajo de Oro.
+    const bajo = await nuevaTarjeta("0993111000");
+    await asProduct(elmenuToken)("POST", "/v1/events", {
+      merchant: "r-1",
+      idempotencyKey: "poco",
+      type: "order.paid",
+      amount: 200_000, // 200 puntos: alcanza el costo (10), no el nivel (500)
+      membership: { id: bajo },
+    });
+
+    const trabado = await asProduct(elmenuToken)("POST", "/v1/redemptions", {
+      merchant: "r-1",
+      membership: { id: bajo },
+      rewardId,
+      redeemedBy: "staff:1",
+    });
+    expect(trabado.statusCode).toBe(409);
+    expect(trabado.json().error).toBe("tier_locked");
+    expect(trabado.json().requiredTier).toBe("Oro");
+
+    // Cliente que sí llegó a Oro.
+    const alto = await nuevaTarjeta("0993222000");
+    await asProduct(elmenuToken)("POST", "/v1/events", {
+      merchant: "r-1",
+      idempotencyKey: "mucho",
+      type: "order.paid",
+      amount: 600_000,
+      membership: { id: alto },
+    });
+
+    const canje = await asProduct(elmenuToken)("POST", "/v1/redemptions", {
+      merchant: "r-1",
+      membership: { id: alto },
+      rewardId,
+      redeemedBy: "staff:1",
+    });
+    expect(canje.statusCode, canje.body).toBe(201);
+  });
+});

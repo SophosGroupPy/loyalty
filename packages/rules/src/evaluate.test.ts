@@ -265,6 +265,55 @@ describe("niveles", () => {
   });
 });
 
+describe("multiplicador por nivel", () => {
+  const config: PointsConfig = {
+    kind: "points",
+    earn: [{ on: "order.paid", rate: { per: 1000, points: 1 } }],
+    tiers: [
+      { name: "Plata", min: 100 }, // solo estatus, sin multiplicador
+      { name: "Oro", min: 500, multiplier: 2 },
+    ],
+  };
+
+  const evento = { type: "order.paid" as const, amount: 10_000, occurredAt: new Date("2026-09-03T15:00:00Z") };
+
+  it("un nivel sin multiplicador no cambia lo que se suma", () => {
+    // Plata es estatus puro: 10.000 / 1.000 = 10 puntos, sin boost.
+    const r = evaluateEarn(config, evento, { earnedToday: 0, currentBalance: 200 });
+    expect(r.amount).toBe(10);
+    expect(r.trace.tierMultiplier).toBe(1);
+  });
+
+  it("un nivel con multiplicador acumula más, según el saldo con el que llega", () => {
+    // Oro (2x): 10 × 2 = 20. El nivel sale del saldo previo, no del resultante.
+    const r = evaluateEarn(config, evento, { earnedToday: 0, currentBalance: 600 });
+    expect(r.amount).toBe(20);
+    expect(r.trace.tierMultiplier).toBe(2);
+  });
+
+  it("el multiplicador de nivel y el de horario se multiplican entre sí", () => {
+    const conHappyHour: PointsConfig = {
+      ...config,
+      earn: [
+        { on: "order.paid", rate: { per: 1000, points: 1 } },
+        { on: "order.paid", multiplier: 2, when: { hour: [15] } },
+      ],
+      timezone: "UTC",
+    };
+    // Oro (2x) en el happy hour (2x): 10 × 2 × 2 = 40.
+    const r = evaluateEarn(conHappyHour, evento, { earnedToday: 0, currentBalance: 600 });
+    expect(r.amount).toBe(40);
+  });
+
+  it("el tope se aplica después del multiplicador de nivel, no antes", () => {
+    // Sin el tope, Oro daría 20. Con perEvent 15, el nivel no lo puede superar.
+    const conTope: PointsConfig = { ...config, caps: { perEvent: 15 } };
+    const r = evaluateEarn(conTope, evento, { earnedToday: 0, currentBalance: 600 });
+    expect(r.amount).toBe(15);
+    expect(r.trace.cappedBy).toBe("per_event");
+  });
+});
+
 describe("día de negocio", () => {
   it("imputa la madrugada al día anterior cuando el corte es a las 6", () => {
     // Sábado 01:30 en Asunción, con corte a las 6: es todavía la noche del

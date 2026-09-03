@@ -295,9 +295,15 @@ export type RedeemOutput =
     }
   | {
       ok: false;
-      reason: "membership_not_found" | "reward_not_found" | "insufficient_balance";
+      reason:
+        | "membership_not_found"
+        | "reward_not_found"
+        | "insufficient_balance"
+        | "tier_locked";
       balance: number;
       required?: number;
+      /** En `tier_locked`, el nivel que el beneficio exige. */
+      requiredTier?: string;
     };
 
 /**
@@ -313,9 +319,9 @@ export async function redeem(db: Db, input: RedeemInput): Promise<RedeemOutput> 
       return { ok: false, reason: "membership_not_found", balance: 0 };
     }
 
-    const found = await rows<{ id: string; cost: number; name: string }>(
+    const found = await rows<{ id: string; cost: number; name: string; min_tier: string | null }>(
       tx,
-      sql`SELECT id, cost, name FROM reward
+      sql`SELECT id, cost, name, min_tier FROM reward
           WHERE id = ${input.rewardId}
             AND merchant_id = ${input.merchantId}
             AND program_id = ${membership.program_id}
@@ -324,6 +330,29 @@ export async function redeem(db: Db, input: RedeemInput): Promise<RedeemOutput> 
     const reward = found[0];
     if (!reward) {
       return { ok: false, reason: "reward_not_found", balance: membership.balance };
+    }
+
+    // Beneficio bloqueado por nivel: el cliente tiene que haber alcanzado el
+    // nivel que el beneficio exige. Se resuelve el umbral desde la config del
+    // programa —el comercio guardó un nombre, "Oro", no un número— y se compara
+    // contra el saldo actual. Si el nivel ya no existe (lo renombraron o lo
+    // borraron), el candado queda sin efecto en vez de trabar un canje legítimo:
+    // penalizar al cliente por un cambio de configuración del comercio sería el
+    // peor de los dos errores.
+    if (reward.min_tier) {
+      const config = membership.config;
+      const requerido =
+        config.kind === "points"
+          ? config.tiers?.find((t) => t.name === reward.min_tier)
+          : undefined;
+      if (requerido && membership.balance < requerido.min) {
+        return {
+          ok: false,
+          reason: "tier_locked",
+          balance: membership.balance,
+          requiredTier: reward.min_tier,
+        };
+      }
     }
 
     if (membership.balance < reward.cost) {
@@ -410,6 +439,7 @@ function emptyTrace(occurredAt: Date, day?: string): EventResult["trace"] {
   return {
     base: 0,
     multiplier: 1,
+    tierMultiplier: 1,
     afterMultiplier: 0,
     cappedBy: null,
     matchedRules: [],

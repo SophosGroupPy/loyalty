@@ -54,6 +54,16 @@ export interface Tier {
   name: string;
   /** Saldo mínimo para alcanzar el nivel. */
   min: number;
+  /**
+   * Multiplicador de acumulación mientras el cliente está en este nivel.
+   *
+   * Ausente o `1` = el nivel es solo estatus, no cambia cuánto se suma. `2` = en
+   * este nivel se acumula el doble. Se aplica sobre lo que las reglas base ya
+   * calcularon, y se combina con el multiplicador por horario multiplicándose:
+   * un cliente Oro (2x) en el happy hour (2x) suma 4x. Los topes se aplican
+   * después, así que el multiplicador nunca rompe el `perEvent` del programa.
+   */
+  multiplier?: number;
 }
 
 export interface Caps {
@@ -146,8 +156,10 @@ export interface EarnContext {
 export interface EarnTrace {
   /** Subtotal de las reglas base, antes de multiplicar. */
   base: number;
-  /** Multiplicador efectivo aplicado. */
+  /** Multiplicador efectivo aplicado (reglas de horario × nivel). */
   multiplier: number;
+  /** Parte del multiplicador que aportó el nivel del cliente. 1 si no hubo. */
+  tierMultiplier: number;
   /** Resultado tras multiplicar, antes de topes. */
   afterMultiplier: number;
   /** Qué tope recortó el resultado, si alguno. */

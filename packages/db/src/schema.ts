@@ -235,6 +235,8 @@ export const reward = pgTable("reward", {
   name: text("name").notNull(),
   cost: integer("cost").notNull(),
   terms: text("terms"),
+  /** Nivel mínimo para canjear. Null = lo puede canjear cualquiera. */
+  minTier: text("min_tier"),
   status: text("status").$type<"active" | "archived">().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
