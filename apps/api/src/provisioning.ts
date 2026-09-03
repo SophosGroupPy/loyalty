@@ -131,6 +131,146 @@ export async function merchantForProvisioning(
   return row ? { slug: row.slug, displayName: row.display_name } : null;
 }
 
+/** Lo que se pierde si se borra un comercio. */
+export interface MerchantFootprint {
+  slug: string;
+  displayName: string;
+  productSlug: string;
+  cards: number;
+  outstanding: number;
+  ledgerEntries: number;
+  passes: number;
+  hasCertificate: boolean;
+}
+
+/**
+ * Qué se lleva puesto el borrado de un comercio.
+ *
+ * Se consulta **antes** de borrar y se devuelve **después**. Un borrado que
+ * contesta "ok" no deja ver si se acaba de tirar un comercio de prueba vacío o
+ * la base de clientes de un restaurante que factura.
+ */
+export async function merchantFootprint(
+  db: Db,
+  merchantId: string,
+): Promise<MerchantFootprint | null> {
+  const found = await rows<{
+    slug: string;
+    display_name: string;
+    product_slug: string;
+    cards: number;
+    outstanding: number;
+    ledger_entries: number;
+    passes: number;
+    has_certificate: boolean;
+  }>(
+    db.drizzle,
+    sql`SELECT m.slug, m.display_name, p.slug AS product_slug,
+               (SELECT count(*)::int FROM membership ms WHERE ms.merchant_id = m.id) AS cards,
+               (SELECT COALESCE(sum(ms.balance), 0)::int FROM membership ms
+                 WHERE ms.merchant_id = m.id) AS outstanding,
+               (SELECT count(*)::int FROM ledger_entry le
+                  JOIN membership ms ON ms.id = le.membership_id
+                 WHERE ms.merchant_id = m.id) AS ledger_entries,
+               (SELECT count(*)::int FROM pass_instance pi
+                  JOIN membership ms ON ms.id = pi.membership_id
+                 WHERE ms.merchant_id = m.id) AS passes,
+               EXISTS (SELECT 1 FROM pass_certificate pc
+                        WHERE pc.merchant_id = m.id) AS has_certificate
+          FROM merchant m
+          JOIN product p ON p.id = m.product_id
+         WHERE m.id = ${merchantId}`,
+  );
+
+  const row = found[0];
+  if (!row) return null;
+
+  return {
+    slug: row.slug,
+    displayName: row.display_name,
+    productSlug: row.product_slug,
+    cards: row.cards,
+    outstanding: row.outstanding,
+    ledgerEntries: row.ledger_entries,
+    passes: row.passes,
+    hasCertificate: row.has_certificate,
+  };
+}
+
+/**
+ * Borra un comercio y **todo** lo que cuelga de él.
+ *
+ * Existe para limpiar comercios de prueba, que se acumulan solos mientras se
+ * integra un producto nuevo. El `ON DELETE CASCADE` del esquema se lleva el
+ * programa, las membresías, los pases emitidos y las notificaciones.
+ *
+ * **Solo funciona sobre comercios sin historia contable.** Si movió puntos, el
+ * trigger `ledger_entry_immutable` rechaza el borrado a nivel base y el DELETE
+ * falla entero. Eso no es un obstáculo a sortear: es la garantía de que el
+ * saldo de un cliente siempre se puede reconstruir. Se comprueba antes para
+ * poder explicarlo, en vez de devolver un error de Postgres.
+ *
+ * El `person` sobrevive: es identidad global compartida y puede tener tarjetas
+ * en otros comercios. Lo que se borra es la relación con **este**.
+ *
+ * `confirmSlug` no es ceremonia: el id es un uuid y un uuid equivocado es
+ * indistinguible del correcto a simple vista. Escribir el slug obliga a mirar
+ * qué se está por borrar, que es la única defensa real contra borrar el
+ * comercio de al lado en la lista.
+ */
+export class MerchantDeleteError extends Error {
+  constructor(
+    readonly code: "not_found" | "slug_mismatch" | "has_ledger",
+    message: string,
+    readonly footprint?: MerchantFootprint,
+  ) {
+    super(message);
+    this.name = "MerchantDeleteError";
+  }
+}
+
+export async function deleteMerchant(
+  db: Db,
+  merchantId: string,
+  confirmSlug: string,
+): Promise<MerchantFootprint> {
+  const footprint = await merchantFootprint(db, merchantId);
+  if (!footprint) {
+    throw new MerchantDeleteError("not_found", "No existe un comercio con ese id.");
+  }
+
+  if (confirmSlug !== footprint.slug) {
+    throw new MerchantDeleteError(
+      "slug_mismatch",
+      `Para borrar "${footprint.displayName}" hay que confirmar su slug exacto: ${footprint.slug}.`,
+      footprint,
+    );
+  }
+
+  // Un comercio que movió puntos tiene historia contable, y el trigger
+  // `ledger_entry_immutable` la protege a nivel base: el CASCADE choca contra
+  // él y el DELETE falla entero.
+  //
+  // Se podría desactivar el trigger para pasar por arriba. No se hace: una
+  // garantía que la propia API sabe saltear no es una garantía, y el día que
+  // un comercio discuta el saldo de un cliente lo único que hay para mostrar
+  // es este ledger. Borrar historia real queda como una operación deliberada
+  // contra la base, hecha por una persona que sabe qué está desactivando —
+  // nunca como un botón del back-office.
+  if (footprint.ledgerEntries > 0) {
+    throw new MerchantDeleteError(
+      "has_ledger",
+      `"${footprint.displayName}" tiene ${footprint.ledgerEntries} asiento(s) en el ledger y ` +
+        `${footprint.outstanding} punto(s) en circulación. El ledger es append-only: no se borra ` +
+        "desde acá. Si de verdad es data de prueba, hay que hacerlo contra la base a mano.",
+      footprint,
+    );
+  }
+
+  await rows(db.drizzle, sql`DELETE FROM merchant WHERE id = ${merchantId}`);
+  return footprint;
+}
+
 // ---------------------------------------------------------------------------
 // Construcción del CSR
 //

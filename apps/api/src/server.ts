@@ -31,6 +31,9 @@ import {
 import { ascConfigFromEnv, createAppleIssuer } from "./apple-pass.js";
 import {
   BurnedIdentifierError,
+  deleteMerchant,
+  merchantFootprint,
+  MerchantDeleteError,
   merchantForProvisioning,
   provisionPassCertificate,
 } from "./provisioning.js";
@@ -1834,6 +1837,56 @@ export function createServer(opts: ServerOptions): FastifyInstance {
         return reply
           .code(502)
           .send({ error: "apple_rejected", message: error.message, detail: error.detail });
+      }
+      throw error;
+    }
+  });
+
+  /**
+   * Borra un comercio y todo lo que cuelga de él.
+   *
+   * Para limpiar comercios de prueba, que se acumulan solos mientras se integra
+   * un producto. Es lo más destructivo que expone la API: se lleva el programa,
+   * las membresías, el ledger, los pases emitidos y las notificaciones.
+   *
+   * Sin `confirmSlug` no borra: contesta 409 con el detalle de lo que se
+   * perdería. Ese es el modo de consulta, y es el que conviene mirar primero.
+   */
+  app.delete("/admin/merchants/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsed = z
+      .object({ confirmSlug: z.string().min(1).optional() })
+      .safeParse(request.body ?? {});
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    // Sin confirmación no se borra: se muestra qué hay adentro. Un uuid
+    // equivocado es indistinguible del correcto, y este es el paso donde se ve.
+    if (!parsed.data.confirmSlug) {
+      const footprint = await merchantFootprint(db, id);
+      if (!footprint) return reply.code(404).send({ error: "merchant_not_found" });
+
+      return reply.code(409).send({
+        error: "confirmation_required",
+        message: `Repetí el slug para confirmar: ${footprint.slug}`,
+        footprint,
+      });
+    }
+
+    try {
+      const borrado = await deleteMerchant(db, id, parsed.data.confirmSlug);
+      request.log.warn(
+        { merchantId: id, slug: borrado.slug, cards: borrado.cards },
+        "comercio borrado desde el back-office",
+      );
+      return reply.send({ deleted: true, ...borrado });
+    } catch (error) {
+      if (error instanceof MerchantDeleteError) {
+        const code = error.code === "not_found" ? 404 : 409;
+        return reply.code(code).send({
+          error: error.code === "not_found" ? "merchant_not_found" : error.code,
+          message: error.message,
+          ...(error.footprint ? { footprint: error.footprint } : {}),
+        });
       }
       throw error;
     }

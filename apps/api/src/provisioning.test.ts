@@ -23,7 +23,14 @@ import { createTestDb, rows, type Db } from "@sophos/db";
 import { AscError, createAscClient, derToPem } from "@sophos/passes";
 
 import { loadSigningMaterial } from "./apple.js";
-import { BurnedIdentifierError, generateCsr, provisionPassCertificate } from "./provisioning.js";
+import {
+  BurnedIdentifierError,
+  deleteMerchant,
+  generateCsr,
+  merchantFootprint,
+  MerchantDeleteError,
+  provisionPassCertificate,
+} from "./provisioning.js";
 import { encryptionKeyFrom } from "./secrets.js";
 
 let db: Db;
@@ -224,5 +231,119 @@ describe("errores de Apple", () => {
       detail: "El identificador ya está en uso.",
     });
     await expect(client.listPassTypeIds()).rejects.toBeInstanceOf(AscError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("borrado de un comercio", () => {
+  /** Deja el comercio con una tarjeta, saldo y un asiento en el ledger. */
+  async function conUnCliente(opts: { conLedger?: boolean } = {}): Promise<void> {
+    const [person] = await rows<{ id: string }>(
+      db.drizzle,
+      sql`INSERT INTO person (phone_e164, consent_version, phone_verified_at)
+          VALUES ('+595993427654', 'programa/v2', now()) RETURNING id`,
+    );
+    const [program] = await rows<{ id: string }>(
+      db.drizzle,
+      sql`INSERT INTO program (merchant_id, kind, config, status)
+          VALUES (${merchantId}, 'points', ${JSON.stringify({ earn: [] })}::jsonb, 'active')
+          RETURNING id`,
+    );
+    const [ms] = await rows<{ id: string }>(
+      db.drizzle,
+      sql`INSERT INTO membership (person_id, program_id, merchant_id, serial_number, balance)
+          VALUES (${person!.id}, ${program!.id}, ${merchantId}, 'SN-1', 12) RETURNING id`,
+    );
+    if (opts.conLedger === false) return;
+
+    await rows(
+      db.drizzle,
+      sql`INSERT INTO ledger_entry
+            (membership_id, merchant_id, kind, amount, balance_after, business_day, reason)
+          VALUES (${ms!.id}, ${merchantId}, 'earn', 12, 12, current_date, 'consumo')`,
+    );
+  }
+
+  it("cuenta lo que se perdería antes de borrar nada", async () => {
+    await conUnCliente();
+
+    const f = await merchantFootprint(db, merchantId);
+
+    expect(f).toMatchObject({
+      slug: "la-vecina",
+      displayName: "La Vecina",
+      productSlug: "elmenu",
+      cards: 1,
+      outstanding: 12,
+      ledgerEntries: 1,
+      hasCertificate: false,
+    });
+  });
+
+  it("no borra si el slug de confirmación no coincide", async () => {
+    // El id es un uuid, y un uuid equivocado es indistinguible del correcto a
+    // simple vista. Repetir el slug obliga a mirar qué se está por borrar.
+    await conUnCliente();
+
+    await expect(deleteMerchant(db, merchantId, "otro-comercio")).rejects.toBeInstanceOf(
+      MerchantDeleteError,
+    );
+
+    const sigue = await rows(db.drizzle, sql`SELECT id FROM merchant WHERE id = ${merchantId}`);
+    expect(sigue).toHaveLength(1);
+  });
+
+  it("se niega a borrar un comercio con historia en el ledger", async () => {
+    // El ledger es append-only a nivel base: el trigger rechaza el DELETE y el
+    // CASCADE falla entero. Se comprueba antes para poder explicar por qué, en
+    // vez de escupir un error de Postgres.
+    await conUnCliente();
+
+    await expect(deleteMerchant(db, merchantId, "la-vecina")).rejects.toMatchObject({
+      code: "has_ledger",
+    });
+
+    const sigue = await rows(db.drizzle, sql`SELECT id FROM merchant WHERE id = ${merchantId}`);
+    expect(sigue).toHaveLength(1);
+  });
+
+  it("con el slug correcto borra un comercio sin movimientos", async () => {
+    await conUnCliente({ conLedger: false });
+
+    const borrado = await deleteMerchant(db, merchantId, "la-vecina");
+    expect(borrado.cards).toBe(1);
+
+    for (const tabla of ["merchant", "program", "membership"] as const) {
+      const quedan = await rows(
+        db.drizzle,
+        tabla === "merchant"
+          ? sql`SELECT id FROM merchant WHERE id = ${merchantId}`
+          : tabla === "program"
+            ? sql`SELECT id FROM program WHERE merchant_id = ${merchantId}`
+            : sql`SELECT id FROM membership WHERE merchant_id = ${merchantId}`,
+      );
+      expect(quedan, `quedaron filas en ${tabla}`).toHaveLength(0);
+    }
+
+    // El ledger cuelga de membership, que ya no existe.
+    const asientos = await rows(db.drizzle, sql`SELECT id FROM ledger_entry`);
+    expect(asientos).toHaveLength(0);
+  });
+
+  it("la persona sobrevive: es identidad global, no del comercio", async () => {
+    // Puede tener tarjeta en otros comercios. Lo que se borra es su relación
+    // con este, no su registro.
+    await conUnCliente({ conLedger: false });
+    await deleteMerchant(db, merchantId, "la-vecina");
+
+    const personas = await rows(db.drizzle, sql`SELECT id FROM person`);
+    expect(personas).toHaveLength(1);
+  });
+
+  it("404 si el comercio no existe", async () => {
+    await expect(
+      deleteMerchant(db, "00000000-0000-0000-0000-000000000000", "lo-que-sea"),
+    ).rejects.toMatchObject({ code: "not_found" });
   });
 });

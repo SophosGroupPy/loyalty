@@ -11,11 +11,11 @@ import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { inflateSync } from "node:zlib";
 
 import { sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import forge from "node-forge";
-import { PNG } from "pngjs";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createTestDb, rows, type Db } from "@sophos/db";
@@ -148,6 +148,33 @@ const conLogoUrl = () =>
     sql`UPDATE merchant SET design = jsonb_set(COALESCE(design, '{}'::jsonb), '{logoUrl}',
         '"https://ejemplo.com/logo.png"') WHERE id = ${merchantId}`,
   );
+
+/**
+ * Mide un PNG y comprueba que sus datos se puedan descomprimir.
+ *
+ * A mano y sin librería: el bug que motivó esto producía un PNG de 65 bytes con
+ * cabecera plausible y datos basura, así que mirar solo el tamaño del archivo o
+ * la firma no alcanza. `inflateSync` sobre el IDAT es lo que separa un PNG que
+ * iOS abre de uno que rechaza.
+ */
+function medirPng(buf: Buffer): { ancho: number; alto: number } {
+  expect(buf.subarray(0, 8).toString("latin1")).toBe("\x89PNG\r\n\x1a\n");
+
+  const idat: Buffer[] = [];
+  let pos = 8;
+  while (pos + 8 <= buf.length) {
+    const largo = buf.readUInt32BE(pos);
+    const tipo = buf.subarray(pos + 4, pos + 8).toString("latin1");
+    if (tipo === "IDAT") idat.push(buf.subarray(pos + 8, pos + 8 + largo));
+    pos += 12 + largo;
+  }
+
+  expect(idat.length, "el PNG no tiene datos").toBeGreaterThan(0);
+  // Tira si los datos están corruptos, que es exactamente el caso que se busca.
+  inflateSync(Buffer.concat(idat));
+
+  return { ancho: buf.readUInt32BE(16), alto: buf.readUInt32BE(20) };
+}
 
 /** Saca un archivo suelto del `.pkpass` para poder mirarlo de verdad. */
 function extraer(res: { rawPayload: Buffer }, nombre: string): Buffer {
@@ -432,8 +459,7 @@ describe("emisión del pase", () => {
     // Que el archivo esté no alcanza: el bug original metía en el zip un PNG
     // corrupto de 65 bytes, y un test de presencia lo daba por bueno. Lo que
     // hay que comprobar es que iOS lo pueda leer.
-    const banda = PNG.sync.read(extraer(res, "strip.png"));
-    expect(banda.width).toBe(750);
+    expect(medirPng(extraer(res, "strip.png"))).toEqual({ ancho: 750, alto: 750 });
   });
 
   it("la banda sale aunque el comercio no haya cargado logo", async () => {
