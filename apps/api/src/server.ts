@@ -19,6 +19,7 @@ import { runExpiry } from "./expiry.js";
 import {
   certificateStatus,
   expiringCertificates,
+  markMerchantPassesUpdated,
   markPassUpdated,
   passesUpdatedSince,
   registerDevice,
@@ -1312,6 +1313,14 @@ export function createServer(opts: ServerOptions): FastifyInstance {
             count(*) FILTER (
               WHERE m.status = 'active'
                 AND NOT ('wallet' = ANY (m.notification_optout))
+                -- Sin pase instalado no hay dónde entregar el aviso: el canal
+                -- ES la tarjeta en la billetera. Contarlos infla el número y le
+                -- promete al comercio un alcance que el sistema no puede
+                -- cumplir, que es justo lo que este medidor existe para evitar.
+                AND EXISTS (
+                  SELECT 1 FROM pass_instance pi
+                   WHERE pi.membership_id = m.id AND pi.state = 'active'
+                )
                 AND (SELECT count(*) FROM notification n
                      WHERE n.membership_id = m.id AND n.channel = 'wallet'
                        AND n.sent_at > now() - interval '24 hours') < ${CAMPAIGN_BUDGET}
@@ -2412,6 +2421,9 @@ export function createServer(opts: ServerOptions): FastifyInstance {
           RETURNING id`,
     );
 
+    await markMerchantPassesUpdated(db, merchant.id);
+
+
     return reply.code(201).send({ id: created[0]?.id });
   });
 
@@ -2427,6 +2439,11 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     );
 
     if (!removed[0]) return reply.code(404).send({ error: "not_found" });
+
+    // Las geocercas van adentro del pase: sacar una del panel no la saca del
+    // teléfono de nadie hasta que se baje una versión nueva.
+    await markMerchantPassesUpdated(db, merchant.id);
+
     return reply.send({ ok: true });
   });
 
@@ -2492,6 +2509,10 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       sql`UPDATE merchant SET design = ${JSON.stringify(parsed.data)}::jsonb
           WHERE id = ${merchant.id}`,
     );
+
+    // El diseño vive adentro de cada pase emitido, así que cambiarlo no alcanza
+    // con guardarlo: hay que decirle a los teléfonos que hay una versión nueva.
+    await markMerchantPassesUpdated(db, merchant.id);
 
     return reply.send({ ok: true, design: parsed.data });
   });

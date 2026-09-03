@@ -516,6 +516,18 @@ describe("campañas", () => {
     const merchant = await merchantId();
     const { sender } = recordingSender();
 
+    // Sin pase instalado no hay dónde entregar el aviso, así que no cuenta como
+    // alcanzable: el canal ES la tarjeta en la billetera.
+    const sinPase = await call("GET", "/v1/campaigns/reach?merchant=r-1");
+    expect(sinPase.json()).toEqual({ total: 1, reachable: 0, unreachable: 1 });
+
+    await rows(
+      db.drizzle,
+      sql`INSERT INTO pass_instance (membership_id, merchant_id, platform, external_id,
+                                     state, last_synced_balance)
+          VALUES (${membershipId}, ${merchant}, 'google', 'obj-alcance', 'active', 0)`,
+    );
+
     const antes = await call("GET", "/v1/campaigns/reach?merchant=r-1");
     expect(antes.json()).toEqual({ total: 1, reachable: 1, unreachable: 0 });
 

@@ -189,6 +189,26 @@ export async function markPassUpdated(db: Db, membershipId: string): Promise<voi
   );
 }
 
+/**
+ * Marca TODOS los pases de un comercio como cambiados.
+ *
+ * Hace falta cuando lo que cambió no es el saldo de una tarjeta sino algo del
+ * comercio —el diseño, las geocercas— que va adentro de cada pase emitido. Sin
+ * esto, el comercio cambia su logo, la pantalla dice que se actualiza solo, y
+ * las tarjetas de sus clientes siguen mostrando el logo viejo para siempre:
+ * PassKit solo baja una versión nueva si `content_updated_at` avanzó.
+ */
+export async function markMerchantPassesUpdated(db: Db, merchantId: string): Promise<void> {
+  await rows(
+    db.drizzle,
+    sql`UPDATE pass_instance SET content_updated_at = now()
+        WHERE platform = 'apple'
+          AND membership_id IN (
+            SELECT id FROM membership WHERE merchant_id = ${merchantId}
+          )`,
+  );
+}
+
 /** Push tokens de todos los dispositivos que tienen este pase. */
 export async function pushTokensFor(
   db: Db,

@@ -336,6 +336,53 @@ describe("aislamiento de la sesión de consola", () => {
     expect(reglas.some((r: { on: string }) => r.on === "ticket.validated")).toBe(true);
   });
 
+  it("cambiar el diseño avisa a los pases ya emitidos", async () => {
+    // Sin esto el comercio cambia su logo, la pantalla le dice que se
+    // actualiza solo, y las tarjetas de sus clientes siguen mostrando el logo
+    // viejo para siempre: PassKit solo baja una versión nueva si
+    // `content_updated_at` avanzó.
+    const card = await asProduct(elmenuToken)("POST", "/v1/memberships", {
+      merchant: "r-1",
+      phone: "0993555444",
+      phoneVerified: true,
+    });
+    const membershipId = card.json().membershipId;
+
+    await rows(
+      db.drizzle,
+      sql`INSERT INTO pass_instance (membership_id, merchant_id, platform, external_id,
+                                     state, last_synced_balance, content_updated_at)
+          SELECT id, merchant_id, 'apple', 'p-diseno', 'active', 0,
+                 now() - interval '2 days'
+            FROM membership WHERE id = ${membershipId}`,
+    );
+
+    const antes = await rows<{ content_updated_at: Date }>(
+      db.drizzle,
+      sql`SELECT content_updated_at FROM pass_instance WHERE external_id = 'p-diseno'`,
+    );
+
+    const res = await asEmbed(donJulio)("PUT", "/embed/design", {
+      programName: "Puntos Don Julio",
+      logoUrl: "https://ejemplo.test/logo.png",
+      backgroundColor: "#FFE066",
+      foregroundColor: "#111111",
+      labelColor: "#666666",
+      balanceLabel: "Puntos",
+      newsLabel: "Novedades",
+    });
+    expect(res.statusCode, res.body).toBe(200);
+
+    const despues = await rows<{ content_updated_at: Date }>(
+      db.drizzle,
+      sql`SELECT content_updated_at FROM pass_instance WHERE external_id = 'p-diseno'`,
+    );
+
+    expect(
+      new Date(despues[0]!.content_updated_at).getTime(),
+    ).toBeGreaterThan(new Date(antes[0]!.content_updated_at).getTime());
+  });
+
   it("un comercio no puede editar el programa de otro", async () => {
     const otro = await asProduct(elmenuToken)("POST", "/v1/embed-tokens", { merchant: "r-2" });
     const res = await asEmbed(otro.json().token)("PUT", "/embed/program", {
@@ -401,9 +448,30 @@ describe("campañas desde la consola", () => {
 
   it("el alcance cuenta solo los clientes propios", async () => {
     const res = await asEmbed(donJulio)("GET", "/embed/campaigns/reach");
-
     expect(res.json().total).toBe(1);
-    expect(res.json().reachable).toBe(1);
+  });
+
+  it("no cuenta como alcanzable a quien no tiene el pase instalado", async () => {
+    // El canal ES la tarjeta en la billetera: sin pase no hay dónde entregar
+    // nada. Contarlo infla el número y le promete al comercio un alcance que el
+    // sistema no puede cumplir, que es justo lo que este medidor evita.
+    const sinPase = await asEmbed(donJulio)("GET", "/embed/campaigns/reach");
+    expect(sinPase.json().total).toBe(1);
+    expect(sinPase.json().reachable).toBe(0);
+
+    await rows(
+      db.drizzle,
+      sql`INSERT INTO pass_instance (membership_id, merchant_id, platform, external_id,
+                                     state, last_synced_balance)
+          SELECT m.id, m.merchant_id, 'google', 'obj-alcance', 'active', 0
+            FROM membership m
+            JOIN merchant mer ON mer.id = m.merchant_id
+           WHERE mer.slug = 'don-julio'
+           LIMIT 1`,
+    );
+
+    const conPase = await asEmbed(donJulio)("GET", "/embed/campaigns/reach");
+    expect(conPase.json().reachable).toBe(1);
   });
 
   it("apagar un aviso automático no afecta a otro comercio", async () => {
