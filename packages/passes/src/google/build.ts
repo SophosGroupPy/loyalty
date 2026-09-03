@@ -110,6 +110,8 @@ export interface BuildObjectInput {
   accountName?: string | null;
   balance: number;
   balanceLabel: string;
+  /** Línea debajo del QR. Ver `CardDesign.attribution`. */
+  attribution?: string;
   tier?: string | null;
   messages?: PassMessage[];
   active?: boolean;
@@ -141,7 +143,10 @@ export function buildLoyaltyObject(input: BuildObjectInput): GoogleLoyaltyObject
       // validan server-side. Por eso puede ser estático y no importa que alguien
       // comparta una captura de su tarjeta.
       value: serialNumber,
-      alternateText: serialNumber,
+      // La atribución en vez del serial: el número ya está adentro del código y
+      // a nadie le sirve leerlo, mientras que esta línea es el único lugar de
+      // la cara del pase donde entra texto libre.
+      alternateText: input.attribution ?? serialNumber,
     },
   };
 

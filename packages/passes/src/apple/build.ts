@@ -120,6 +120,8 @@ export function buildStoreCard(input: BuildPassInput): ApplePass {
         format: "PKBarcodeFormatQR",
         message: input.serialNumber,
         messageEncoding: "iso-8859-1",
+        // Se renderiza justo debajo del código.
+        ...(design.attribution ? { altText: design.attribution } : {}),
       },
     ],
     // Apple le agrega `/v1/devices/...` a esta base por su cuenta, así que acá

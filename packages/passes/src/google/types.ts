@@ -19,6 +19,19 @@ export interface CardDesign {
   /** Etiqueta del saldo: "Puntos", "Sellos". */
   balanceLabel: string;
   /**
+   * Línea debajo del QR, en las dos plataformas.
+   *
+   * Es la atribución del producto que emite —"Powered by elMenu"— y NO va fija:
+   * la misma API sirve a elMenú, Noctu y FactuFast, así que el día que Noctu
+   * emita un pase tiene que decir Noctu. Se resuelve desde el producto dueño
+   * del comercio.
+   *
+   * En Apple es `altText` del código; en Google, `alternateText`. Es el único
+   * lugar de la cara del pase donde entra texto libre sin quitarle espacio a
+   * los datos del cliente.
+   */
+  attribution?: string;
+  /**
    * Etiqueta del campo de novedades.
    *
    * **Lo consume el constructor de Apple, no el de Google.** En Apple no se

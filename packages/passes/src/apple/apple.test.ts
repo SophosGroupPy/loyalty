@@ -292,3 +292,19 @@ describe("defensas al armar el paquete", () => {
     expect(() => buildPkpass({ pass: corto, images, material })).toThrow(/16/);
   });
 });
+
+describe("atribución y banda de imagen", () => {
+  it("pone la atribución debajo del código", () => {
+    const armado = pass({ design: { ...design, attribution: "Powered by elMenu" } });
+
+    // `altText` es lo que iOS renderiza justo debajo del QR. Es el único lugar
+    // de la cara del pase donde entra texto libre sin quitarle espacio a los
+    // datos del cliente.
+    expect(armado.barcodes[0]?.altText).toBe("Powered by elMenu");
+  });
+
+  it("sin atribución no inventa una línea vacía", () => {
+    const armado = pass();
+    expect(armado.barcodes[0]?.altText).toBeUndefined();
+  });
+});

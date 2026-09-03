@@ -33,6 +33,14 @@ import { PNG } from "pngjs";
 export const APPLE_ICON_PX = 58;
 export const APPLE_LOGO_PX = 160;
 
+/**
+ * Ancho máximo de la banda de imagen de un `storeCard`.
+ *
+ * Apple la pide de 375x123 puntos; a 2x son 750 de ancho. Más que eso es peso
+ * que el teléfono baja en cada cambio de saldo sin ganar nitidez.
+ */
+export const APPLE_STRIP_PX = 750;
+
 export class ResizeError extends Error {
   constructor(message: string, override readonly cause?: unknown) {
     super(message);

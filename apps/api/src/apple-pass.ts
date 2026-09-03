@@ -9,6 +9,8 @@ import { sql } from "drizzle-orm";
 
 import { rows, type Db } from "@sophos/db";
 import {
+  APPLE_STRIP_PX,
+  shrinkPng,
   appleImagesFrom,
   buildPkpass,
   buildStoreCard,
@@ -39,6 +41,7 @@ interface CardRow {
   membership_id: string;
   merchant_id: string;
   merchant_slug: string;
+  product_name: string;
   display_name: string;
   legal_name: string;
   design: CardDesign | null;
@@ -85,6 +88,28 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
    * tarjeta con el ícono genérico es mejor que ninguna tarjeta. Se registra
    * como fallback en vez de fallar en silencio.
    */
+  /**
+   * Baja y achica la banda de imagen. Devuelve `null` ante cualquier problema.
+   *
+   * No tira: una banda que no se puede bajar no es motivo para dejar al cliente
+   * sin tarjeta. El pase sale sin ella, que es exactamente como salía antes.
+   */
+  async function loadStrip(design: CardDesign): Promise<Buffer | null> {
+    if (!design.stripImageUrl) return null;
+    try {
+      const response = await fetchImpl(design.stripImageUrl, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) return null;
+
+      const bruta = Buffer.from(await response.arrayBuffer());
+      if (bruta.byteLength > MAX_LOGO_BYTES) return null;
+      return shrinkPng(bruta, APPLE_STRIP_PX);
+    } catch {
+      return null;
+    }
+  }
+
   async function loadImages(design: CardDesign): Promise<{ images: PassImages; fallback: boolean }> {
     const icono = solidPng(58, design.backgroundColor);
 
@@ -113,7 +138,15 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
       // cada cambio de saldo.
       try {
         const { icon, logo: chico } = appleImagesFrom(logo);
-        return { images: { "icon.png": icon, "logo.png": chico }, fallback: false };
+        const imagenes: PassImages = { "icon.png": icon, "logo.png": chico };
+
+        // La banda de foto sobre la tarjeta. Es lo que le da cara de local y no
+        // de cupón genérico, y es opcional: si el comercio no la cargó o no se
+        // puede bajar, el pase sale igual sin ella.
+        const banda = await loadStrip(design);
+        if (banda) imagenes["strip.png"] = banda;
+
+        return { images: imagenes, fallback: false };
       } catch {
         // El PNG se leyó como PNG pero no se pudo decodificar. Es preferible el
         // ícono genérico a un pase que iOS rechaza.
@@ -134,10 +167,12 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
         db.drizzle,
         sql`SELECT m.id AS membership_id, m.merchant_id, m.serial_number, m.balance, m.tier,
                    mer.slug AS merchant_slug, mer.display_name, mer.legal_name, mer.design,
+                   prod.name AS product_name,
                    p.kind AS program_kind,
                    COALESCE(pi.content_updated_at, m.issued_at) AS content_updated_at
             FROM membership m
             JOIN merchant mer ON mer.id = m.merchant_id
+            JOIN product prod ON prod.id = mer.product_id
             JOIN program p ON p.id = m.program_id
             LEFT JOIN pass_instance pi
               ON pi.membership_id = m.id AND pi.platform = 'apple'
@@ -166,6 +201,9 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
         ...(card.design ?? {}),
         balanceLabel:
           card.design?.balanceLabel ?? (card.program_kind === "stamps" ? "Sellos" : "Puntos"),
+        // Se resuelve del producto dueño del comercio, no fija: la misma API
+        // sirve a elMenú, Noctu y FactuFast.
+        attribution: card.design?.attribution ?? `Powered by ${card.product_name}`,
       };
 
       const locations = await rows<{ latitude: number; longitude: number; relevant_text: string | null }>(

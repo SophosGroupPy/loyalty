@@ -79,6 +79,7 @@ export type SyncOutcome =
   | { status: "failed"; error: string };
 
 interface CardRow {
+  product_name: string;
   membership_id: string;
   merchant_id: string;
   merchant_slug: string;
@@ -114,9 +115,11 @@ export function createPassService(
       sql`SELECT m.id AS membership_id, m.merchant_id, m.serial_number, m.balance, m.tier,
                  m.display_name AS holder_name,
                  mer.slug AS merchant_slug, mer.display_name, mer.legal_name, mer.design,
+                 prod.name AS product_name,
                  p.kind AS program_kind
           FROM membership m
           JOIN merchant mer ON mer.id = m.merchant_id
+          JOIN product prod ON prod.id = mer.product_id
           JOIN program p ON p.id = m.program_id
           WHERE m.id = ${membershipId}`,
     );
@@ -143,6 +146,9 @@ export function createPassService(
       // Los fallbacks van después del spread: si el comercio guardó un diseño
       // parcial, un campo vacío no puede pisar el valor calculado.
       programName: stored.programName || card.display_name,
+      // Del producto dueño del comercio, no fija: la misma API sirve a elMenú,
+      // Noctu y FactuFast.
+      attribution: stored.attribution || `Powered by ${card.product_name}`,
       balanceLabel:
         stored.balanceLabel || (card.program_kind === "stamps" ? "Sellos" : "Puntos"),
     };
@@ -188,6 +194,7 @@ export function createPassService(
         accountName: card.holder_name,
         balance: card.balance,
         balanceLabel: design.balanceLabel,
+        attribution: design.attribution,
         tier: card.tier,
       });
 

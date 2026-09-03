@@ -56,6 +56,7 @@ export {
   ResizeError,
   APPLE_ICON_PX,
   APPLE_LOGO_PX,
+  APPLE_STRIP_PX,
   createAscClient,
   derToPem,
   AscError,
