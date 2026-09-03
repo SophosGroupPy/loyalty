@@ -142,12 +142,48 @@ export async function enroll(db: Db, input: EnrollInput): Promise<EnrollOutput> 
       };
     }
 
-    const existing = await rows<{ id: string; serial_number: string; balance: number }>(
+    // Ya existía. Puede estar viva, o dada de baja y volviendo.
+    const existing = await rows<{
+      id: string;
+      serial_number: string;
+      balance: number;
+      status: string;
+    }>(
       tx,
-      sql`SELECT id, serial_number, balance FROM membership
+      sql`SELECT id, serial_number, balance, status FROM membership
           WHERE person_id = ${personId} AND program_id = ${input.programId}`,
     );
     const membership = existing[0];
+
+    // Si se había dado de baja y vuelve, se reactiva con los datos nuevos.
+    //
+    // Se devuelve `created: true` a propósito: para la persona esto ES un alta
+    // —vuelve a entrar al programa— y el producto lo trata como tal, mandándole
+    // otra vez su tarjeta. Devolver `false` haría que el reingreso fuera mudo:
+    // se registraría sin que nadie le entregue nada.
+    //
+    // El saldo NO se reinicia. Los puntos son una deuda del comercio con ella y
+    // no dejaron de serlo porque se haya ido un tiempo.
+    if (membership && membership.status !== "active") {
+      await rows(
+        tx,
+        sql`UPDATE membership
+               SET status = 'active',
+                   display_name = ${input.displayName ?? null},
+                   email = ${input.email ?? null},
+                   birthdate = ${input.birthdate ?? null}
+             WHERE id = ${membership.id}`,
+      );
+
+      return {
+        membershipId: membership.id,
+        personId,
+        serialNumber: membership.serial_number,
+        balance: membership.balance,
+        created: true,
+        personExisted,
+      };
+    }
     if (!membership) throw new Error("no se pudo resolver la membresía");
 
     return {

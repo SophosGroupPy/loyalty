@@ -2053,6 +2053,67 @@ export function createServer(opts: ServerOptions): FastifyInstance {
   });
 
   /**
+   * Saca a un cliente del programa.
+   *
+   * Son DOS cosas distintas y conflarlas sería un error:
+   *
+   * - `baja`: deja de participar. No acumula más y el pase deja de tener
+   *   sentido, pero su ficha y su historial quedan. Es reversible: si vuelve,
+   *   se reactiva con el saldo que tenía. Es lo que se usa el 99% de las veces.
+   *
+   * - `borrar`: además se borran los datos personales que este comercio tiene
+   *   de esa persona. Bajo la Ley 7593/2025 es un derecho que puede ejercer, y
+   *   no se puede responder con "la damos de baja".
+   *
+   * **El ledger no se toca en ninguno de los dos casos.** Es append-only y es
+   * la fuente del saldo: borrar asientos rompería la auditoría y dejaría al
+   * comercio sin poder explicar un canje pasado. Lo que se borra es la
+   * identidad, no la contabilidad.
+   */
+  app.post<{ Params: { id: string } }>("/embed/customers/:id", async (request, reply) => {
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const parsed = z
+      .object({ modo: z.enum(["baja", "borrar"]) })
+      .safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const encontrada = await rows<{ id: string }>(
+      db.drizzle,
+      sql`SELECT id FROM membership
+           WHERE id = ${request.params.id} AND merchant_id = ${merchant.id}`,
+    );
+    if (!encontrada[0]) return reply.code(404).send({ error: "not_found" });
+
+    if (parsed.data.modo === "baja") {
+      await rows(
+        db.drizzle,
+        sql`UPDATE membership SET status = 'opted_out' WHERE id = ${request.params.id}`,
+      );
+    } else {
+      // Los campos se vacían de verdad, no se marcan como borrados: guardar el
+      // nombre "por las dudas" es exactamente lo que la persona pidió que no
+      // pasara. El saldo queda porque es una deuda del comercio con ella, y el
+      // ledger porque es el registro de operaciones, no de identidad.
+      await rows(
+        db.drizzle,
+        sql`UPDATE membership
+               SET status = 'deleted', display_name = NULL, email = NULL,
+                   birthdate = NULL, notes = NULL, tags = '{}'
+             WHERE id = ${request.params.id}`,
+      );
+    }
+
+    // El pase deja de actualizarse, pero el que ya está en el teléfono sigue
+    // ahí: no hay forma de sacarlo a distancia. Se marca para que la próxima
+    // consulta traiga la versión sin saldo.
+    await markPassUpdated(db, request.params.id);
+
+    return reply.send({ ok: true, modo: parsed.data.modo });
+  });
+
+  /**
    * El comercio cambia su regla de acumulación.
    *
    * Solo la regla base: cuánto se gana por consumo. Los topes, el vencimiento y

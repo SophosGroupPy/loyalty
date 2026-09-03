@@ -383,6 +383,151 @@ describe("aislamiento de la sesión de consola", () => {
     ).toBeGreaterThan(new Date(antes[0]!.content_updated_at).getTime());
   });
 
+  it("la baja corta la acumulación y conserva el historial", async () => {
+    const card = await asProduct(elmenuToken)("POST", "/v1/memberships", {
+      merchant: "r-1",
+      phone: "0993111222",
+      phoneVerified: true,
+      displayName: "Ana",
+    });
+    const id = card.json().membershipId;
+
+    await asProduct(elmenuToken)("POST", "/v1/events", {
+      merchant: "r-1",
+      idempotencyKey: "antes-de-la-baja",
+      type: "order.paid",
+      amount: 50_000,
+      membership: { id },
+    });
+
+    const baja = await asEmbed(donJulio)("POST", `/embed/customers/${id}`, { modo: "baja" });
+    expect(baja.statusCode, baja.body).toBe(200);
+
+    // Ya no acumula. El evento igual se registra —es lo que pasó— pero no
+    // acredita: se responde con el motivo en vez de tragárselo en silencio.
+    const despues = await asProduct(elmenuToken)("POST", "/v1/events", {
+      merchant: "r-1",
+      idempotencyKey: "despues-de-la-baja",
+      type: "order.paid",
+      amount: 50_000,
+      membership: { id },
+    });
+    expect(despues.json().skipped).toBe("no_membership");
+
+    // …pero el saldo y el asiento siguen ahí: es la deuda del comercio con esa
+    // persona y el registro de lo que pasó, no datos de identidad.
+    const fila = await rows<{ balance: number; display_name: string | null }>(
+      db.drizzle,
+      sql`SELECT balance, display_name FROM membership WHERE id = ${id}`,
+    );
+    expect(fila[0]?.balance).toBe(5);
+    expect(fila[0]?.display_name).toBe("Ana");
+  });
+
+  it("borrar vacía los datos personales pero no el saldo", async () => {
+    const card = await asProduct(elmenuToken)("POST", "/v1/memberships", {
+      merchant: "r-1",
+      phone: "0993111333",
+      phoneVerified: true,
+      displayName: "Ana",
+      email: "ana@ejemplo.com",
+      birthdate: "1990-04-17",
+    });
+    const id = card.json().membershipId;
+
+    await asProduct(elmenuToken)("POST", "/v1/events", {
+      merchant: "r-1",
+      idempotencyKey: "antes-del-borrado",
+      type: "order.paid",
+      amount: 50_000,
+      membership: { id },
+    });
+
+    const res = await asEmbed(donJulio)("POST", `/embed/customers/${id}`, { modo: "borrar" });
+    expect(res.statusCode, res.body).toBe(200);
+
+    const fila = await rows<{
+      status: string;
+      display_name: string | null;
+      email: string | null;
+      birthdate: string | null;
+      balance: number;
+    }>(
+      db.drizzle,
+      sql`SELECT status, display_name, email, birthdate, balance
+            FROM membership WHERE id = ${id}`,
+    );
+
+    // Los campos se vacían de verdad: guardarlos "por las dudas" es lo que la
+    // persona pidió que no pase.
+    expect(fila[0]?.status).toBe("deleted");
+    expect(fila[0]?.display_name).toBeNull();
+    expect(fila[0]?.email).toBeNull();
+    expect(fila[0]?.birthdate).toBeNull();
+    // El saldo queda: es una deuda del comercio, no un dato personal.
+    expect(fila[0]?.balance).toBe(5);
+  });
+
+  it("si vuelve, se reactiva con su saldo y se le manda la tarjeta de nuevo", async () => {
+    const card = await asProduct(elmenuToken)("POST", "/v1/memberships", {
+      merchant: "r-1",
+      phone: "0993111444",
+      phoneVerified: true,
+    });
+    const id = card.json().membershipId;
+
+    await asProduct(elmenuToken)("POST", "/v1/events", {
+      merchant: "r-1",
+      idempotencyKey: "antes-de-volver",
+      type: "order.paid",
+      amount: 90_000,
+      membership: { id },
+    });
+
+    await asEmbed(donJulio)("POST", `/embed/customers/${id}`, { modo: "baja" });
+
+    const vuelve = await asProduct(elmenuToken)("POST", "/v1/memberships", {
+      merchant: "r-1",
+      phone: "0993111444",
+      phoneVerified: true,
+      displayName: "Ana otra vez",
+    });
+
+    // `created: true` a propósito: para la persona esto ES un alta, y el
+    // producto tiene que volver a entregarle su tarjeta. Con `false` el
+    // reingreso sería mudo.
+    expect(vuelve.json().created).toBe(true);
+    expect(vuelve.json().membershipId).toBe(id);
+    expect(vuelve.json().balance).toBe(9);
+
+    // Y vuelve a acumular.
+    const evento = await asProduct(elmenuToken)("POST", "/v1/events", {
+      merchant: "r-1",
+      idempotencyKey: "ya-volvio",
+      type: "order.paid",
+      amount: 10_000,
+      membership: { id },
+    });
+    expect(evento.statusCode).toBe(201);
+    expect(evento.json().balance).toBe(10);
+  });
+
+  it("un comercio no puede dar de baja al cliente de otro", async () => {
+    const card = await asProduct(elmenuToken)("POST", "/v1/memberships", {
+      merchant: "r-1",
+      phone: "0993111555",
+      phoneVerified: true,
+    });
+
+    const otro = await asProduct(elmenuToken)("POST", "/v1/embed-tokens", { merchant: "r-2" });
+    const res = await asEmbed(otro.json().token)(
+      "POST",
+      `/embed/customers/${card.json().membershipId}`,
+      { modo: "borrar" },
+    );
+    expect(res.statusCode).toBe(404);
+  });
+
   it("un comercio no puede editar el programa de otro", async () => {
     const otro = await asProduct(elmenuToken)("POST", "/v1/embed-tokens", { merchant: "r-2" });
     const res = await asEmbed(otro.json().token)("PUT", "/embed/program", {
