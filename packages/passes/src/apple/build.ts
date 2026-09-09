@@ -147,33 +147,33 @@ export function buildStoreCard(input: BuildPassInput): ApplePass {
    * El nombre va entero, no solo el primero: acá hay ancho de sobra, y "Diego
    * Castro Gonzales" es cómo la persona se reconoce. Apple lo corta si no entra.
    */
-  const secondaryFields: PassField[] = [];
-  if (input.memberName?.trim()) {
-    secondaryFields.push({ key: "cliente", label: "Cliente", value: input.memberName.trim() });
-  }
+  const esSellos = (input.stampsTarget ?? 0) > 0;
 
+  /**
+   * El nombre de la persona y su antigüedad. Dónde van depende del programa.
+   *
+   * Son las dos ranuras que separan una tarjeta de un cupón: la vuelven suya. El
+   * nombre va entero, no solo el primero: acá hay ancho de sobra, y "Diego Castro
+   * Gonzales" es cómo la persona se reconoce. Apple lo corta si no entra.
+   */
+  const datosCliente: PassField[] = [];
+  if (input.memberName?.trim()) {
+    datosCliente.push({ key: "cliente", label: "Cliente", value: input.memberName.trim() });
+  }
   const desde = input.memberSince ? mesYAnio(input.memberSince) : null;
   if (desde) {
     // Solo "Desde", no "Cliente desde": el campo de al lado ya dice "Cliente",
     // y repetir la palabra en las dos ranuras contiguas se lee como un error.
-    secondaryFields.push({ key: "desde", label: "Desde", value: desde });
+    datosCliente.push({ key: "desde", label: "Desde", value: desde });
   }
 
   /**
-   * En sellos el saldo se muestra como "3 de 10".
-   *
-   * El número solo obliga a recordar cuántos hacen falta, y nadie lo recuerda.
-   * Con el objetivo al lado, la tarjeta contesta sola la única pregunta que la
-   * persona se hace cuando la abre: cuánto me falta.
+   * El saldo. En sellos se muestra como "3 de 10": el número solo obliga a
+   * recordar cuántos faltan, y nadie lo recuerda.
    */
-  const saldo: PassField =
-    input.stampsTarget && input.stampsTarget > 0
-      ? {
-          key: "saldo",
-          label: design.balanceLabel,
-          value: `${input.balance} de ${input.stampsTarget}`,
-        }
-      : { key: "saldo", label: design.balanceLabel, value: input.balance };
+  const saldo: PassField = esSellos
+    ? { key: "saldo", label: design.balanceLabel, value: `${input.balance} de ${input.stampsTarget}` }
+    : { key: "saldo", label: design.balanceLabel, value: input.balance };
 
   const pass: ApplePass = {
     formatVersion: 1,
@@ -197,12 +197,24 @@ export function buildStoreCard(input: BuildPassInput): ApplePass {
     // ese prefijo exige token de producto, y quien llama es un iPhone.
     webServiceURL: `${config.webServiceURL.replace(/\/+$/, "")}/apple`,
     authenticationToken: input.authenticationToken,
-    storeCard: {
-      ...(headerFields.length > 0 ? { headerFields } : {}),
-      primaryFields: [saldo],
-      ...(secondaryFields.length > 0 ? { secondaryFields } : {}),
-      backFields,
-    },
+    // En sellos, los casilleros SON la banda, y Apple dibuja los primaryFields
+    // ENCIMA de la banda: un "2 de 10" en primary choca con los sellos. Por eso
+    // en sellos la banda queda limpia y la cuenta baja al cuerpo (secondary), con
+    // el cliente debajo (auxiliary). En puntos no hay casilleros, así que el
+    // número va grande sobre la foto —estilo Air Europa— y el cliente en secondary.
+    storeCard: esSellos
+      ? {
+          ...(headerFields.length > 0 ? { headerFields } : {}),
+          secondaryFields: [saldo],
+          ...(datosCliente.length > 0 ? { auxiliaryFields: datosCliente } : {}),
+          backFields,
+        }
+      : {
+          ...(headerFields.length > 0 ? { headerFields } : {}),
+          primaryFields: [saldo],
+          ...(datosCliente.length > 0 ? { secondaryFields: datosCliente } : {}),
+          backFields,
+        },
   };
 
   if (design.logoText) pass.logoText = design.logoText;

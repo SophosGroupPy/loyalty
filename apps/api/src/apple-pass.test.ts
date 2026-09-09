@@ -799,14 +799,18 @@ describe("tarjeta de sellos", () => {
     expect(listar(res)).toContain("strip.png");
   });
 
-  it("el saldo se muestra contra el objetivo, no solo", async () => {
-    // "340" no dice nada; "340 de 6" sí. El saldo de este comercio en el setup
-    // es 340, así que sirve igual para ver el formato.
+  it("en sellos, la cuenta va DEBAJO de la banda, no encima", async () => {
+    // Apple dibuja los primaryFields ENCIMA de la banda, y en sellos la banda
+    // son los casilleros: un "340 de 6" en primary chocaría con los sellos. Por
+    // eso la cuenta baja a secondary (debajo de la banda) y NO hay primary.
     await cargarCertificado();
     await programaDeSellos(6);
 
     const pass = passJson(await pedirPase());
-    expect(pass.storeCard.primaryFields[0].value).toBe("340 de 6");
+    expect(pass.storeCard.primaryFields).toBeUndefined();
+    expect(pass.storeCard.secondaryFields[0].value).toBe("340 de 6");
+    // El cliente baja un escalón más, para no competir con la cuenta.
+    expect(pass.storeCard.auxiliaryFields).toBeDefined();
   });
 
   it("un programa de puntos NO lleva el objetivo ni banda dibujada", async () => {

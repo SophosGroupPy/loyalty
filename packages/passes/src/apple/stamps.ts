@@ -158,6 +158,13 @@ export interface StampStripInput {
   backgroundColor: string;
   /** Color de los sellos completados, en hex. */
   accentColor?: string;
+  /**
+   * Icono del sello, PNG con transparencia. Si viene, reemplaza al tilde: el
+   * sello lleno lo muestra sólido y el vacío lo muestra tenue, así el cliente ve
+   * de una qué está juntando (un café, una hamburguesa) en vez de un tilde
+   * genérico. Se usa solo su forma (el canal alfa); el color lo pone la tarjeta.
+   */
+  icon?: Buffer | null;
 }
 
 /**
@@ -181,6 +188,40 @@ function fondoDesde(foto: PNG, destino: PNG): void {
       destino.data[dst + 1] = foto.data[src + 1]!;
       destino.data[dst + 2] = foto.data[src + 2]!;
       destino.data[dst + 3] = 255;
+    }
+  }
+}
+
+/**
+ * Estampa la forma de un icono, recoloreada, centrada en (cx, cy).
+ *
+ * Usa **solo el canal alfa** del icono: su color propio se descarta y se pinta
+ * con `color`. Así un icono en cualquier color sirve, y la tarjeta manda el
+ * contraste. Se escala con `object-fit: contain` para que no se deforme, y a
+ * `frac` del diámetro del sello para dejarle aire al borde.
+ */
+function dibujarIcono(
+  png: PNG,
+  icono: PNG,
+  cx: number,
+  cy: number,
+  diametro: number,
+  color: Rgb,
+  alpha: number,
+): void {
+  const lado = diametro * 0.62;
+  const escala = lado / Math.max(icono.width, icono.height);
+  const w = icono.width * escala;
+  const h = icono.height * escala;
+  const x0 = cx - w / 2;
+  const y0 = cy - h / 2;
+
+  for (let y = 0; y < Math.ceil(h); y++) {
+    for (let x = 0; x < Math.ceil(w); x++) {
+      const sx = Math.min(icono.width - 1, Math.floor(x / escala));
+      const sy = Math.min(icono.height - 1, Math.floor(y / escala));
+      const a = icono.data[(sy * icono.width + sx) * 4 + 3]! / 255;
+      if (a > 0.02) blend(png, Math.round(x0 + x), Math.round(y0 + y), color, a * alpha);
     }
   }
 }
@@ -227,6 +268,17 @@ export function stampStrip(input: StampStripInput): Buffer {
   const total = Math.max(1, Math.min(MAX_STAMPS_DRAWN, Math.floor(input.total)));
   const llenos = Math.max(0, Math.min(total, Math.floor(input.earned)));
 
+  // Icono del comercio, si lo subió. Si no se puede leer, se cae al tilde: un
+  // sello con tilde es mejor que ninguno.
+  let icono: PNG | null = null;
+  if (input.icon) {
+    try {
+      icono = PNG.sync.read(input.icon);
+    } catch {
+      icono = null;
+    }
+  }
+
   // Sobre foto con velo, blanco siempre gana. Sobre color plano depende del
   // color que eligió el comercio.
   const claro = { r: 255, g: 255, b: 255 };
@@ -271,12 +323,15 @@ export function stampStrip(input: StampStripInput): Buffer {
 
     if (i < llenos) {
       disco(png, cx, cy, radio, acento);
-      tilde(png, cx, cy, radio, tintaTilde);
+      if (icono) dibujarIcono(png, icono, cx, cy, radio * 2, tintaTilde, 1);
+      else tilde(png, cx, cy, radio, tintaTilde);
     } else {
       // Relleno tenue además del anillo: el casillero vacío tiene que leerse
-      // como un lugar que espera algo, no como un contorno flotando.
+      // como un lugar que espera algo, no como un contorno flotando. Con icono,
+      // se muestra tenue adentro: el cliente ve qué está por ganar.
       disco(png, cx, cy, radio, tinta, conFoto ? 0.2 : 0.16);
       anillo(png, cx, cy, radio, Math.max(3, radio * 0.1), tinta, 0.95);
+      if (icono) dibujarIcono(png, icono, cx, cy, radio * 2, tinta, 0.4);
     }
   }
 

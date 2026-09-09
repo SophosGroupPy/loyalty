@@ -128,6 +128,28 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
     }
   }
 
+  /**
+   * Baja el icono del sello. Devuelve `null` ante cualquier problema.
+   *
+   * A diferencia de la banda, **no se achica**: `shrinkPng` aplana el alfa, y el
+   * icono es justamente una silueta que se compone por su transparencia. Se
+   * exige que sea PNG y se acota el tamaño; el escalado fino lo hace el
+   * dibujante del sello, que lo baja a la medida del casillero.
+   */
+  async function loadIcon(design: CardDesign): Promise<Buffer | null> {
+    if (!design.stampIconUrl) return null;
+    try {
+      const response = await fetchImpl(design.stampIconUrl, { signal: AbortSignal.timeout(5_000) });
+      if (!response.ok) return null;
+
+      const bruta = Buffer.from(await response.arrayBuffer());
+      if (bruta.byteLength > MAX_LOGO_BYTES || !isPng(bruta)) return null;
+      return bruta;
+    } catch {
+      return null;
+    }
+  }
+
   async function loadLogo(design: CardDesign): Promise<{ images: PassImages; fallback: boolean }> {
     const icono = solidPng(58, design.backgroundColor);
 
@@ -263,6 +285,7 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
       if (card.program_kind === "stamps") {
         if (rewardAt > 0) {
           try {
+            const icono = await loadIcon(design);
             images["strip.png"] = stampStrip({
               total: rewardAt,
               earned: card.balance,
@@ -271,6 +294,7 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
               // El sello lleno usa el color del texto, que es el que el comercio
               // ya eligió para que contraste con su fondo.
               ...(design.foregroundColor ? { accentColor: design.foregroundColor } : {}),
+              ...(icono ? { icon: icono } : {}),
             });
           } catch {
             // Se deja la banda que hubiera: una tarjeta sin casilleros es peor

@@ -136,3 +136,50 @@ describe("luminancia", () => {
     expect(esOscuro("#00FF00")).toBe(false);
   });
 });
+
+describe("icono personalizado del sello", () => {
+  /** Un icono con alfa: un cuadrado central opaco sobre transparente. */
+  function iconoCuadrado(): Buffer {
+    const S = 80;
+    const p = new PNG({ width: S, height: S });
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const i = (y * S + x) * 4;
+        const dentro = x > 24 && x < 56 && y > 24 && y < 56;
+        p.data[i] = 20;
+        p.data[i + 1] = 20;
+        p.data[i + 2] = 20;
+        p.data[i + 3] = dentro ? 255 : 0;
+      }
+    }
+    return PNG.sync.write(p);
+  }
+
+  it("con icono, la banda cambia respecto de la del tilde", () => {
+    const base = { total: 6, earned: 3, backgroundColor: "#00A63E", accentColor: "#FFFFFF" as string };
+    const conTilde = stampStrip(base);
+    const conIcono = stampStrip({ ...base, icon: iconoCuadrado() });
+    expect(conTilde.equals(conIcono)).toBe(false);
+  });
+
+  it("un icono ilegible no rompe la banda: cae al tilde", () => {
+    const base = { total: 6, earned: 3, backgroundColor: "#00A63E" };
+    const conBasura = stampStrip({ ...base, icon: Buffer.from("no soy un png") });
+    // Sale una banda válida igual (no tira, no queda vacía).
+    expect(leer(conBasura).width).toBe(STRIP_WIDTH);
+    // Y es idéntica a la del tilde: el icono roto simplemente se ignora.
+    expect(conBasura.equals(stampStrip(base))).toBe(true);
+  });
+
+  it("el icono se dibuja sólido en el lleno y tenue en el vacío", () => {
+    // Un solo sello lleno + un solo vacío, para comparar el centro de cada uno.
+    const png = leer(
+      stampStrip({ total: 2, earned: 1, backgroundColor: "#1C1917", accentColor: "#FFFFFF", icon: iconoCuadrado() }),
+    );
+    // El icono es oscuro sobre disco claro en el lleno, y tenue en el vacío;
+    // basta con que los dos centros difieran (el dibujo cambió algo en cada uno).
+    const lleno = pixelDelSello(png, 0, 2);
+    const vacio = pixelDelSello(png, 1, 2);
+    expect(lleno).not.toEqual(vacio);
+  });
+});

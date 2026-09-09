@@ -2859,6 +2859,7 @@ export function createServer(opts: ServerOptions): FastifyInstance {
         logoText: stored.logoText ?? "",
         heroImageUrl: stored.heroImageUrl ?? "",
         stripImageUrl: stored.stripImageUrl ?? "",
+        stampIconUrl: stored.stampIconUrl ?? "",
       },
       merchantName: merchant.display_name,
       unit: esSellos ? "stamps" : "points",
@@ -2883,6 +2884,7 @@ export function createServer(opts: ServerOptions): FastifyInstance {
         logoText: z.string().max(30).optional(),
         heroImageUrl: z.string().url().or(z.literal("")).optional(),
         stripImageUrl: z.string().url().or(z.literal("")).optional(),
+        stampIconUrl: z.string().url().or(z.literal("")).optional(),
       })
       .safeParse(request.body);
     if (!parsed.success) return badRequest(reply, parsed.error.issues);

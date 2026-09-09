@@ -67,6 +67,13 @@ export interface CardDesign {
    * En Google el equivalente aproximado es `heroImageUrl`.
    */
   stripImageUrl?: string;
+  /**
+   * Icono del sello, solo en programas de sellos: PNG con transparencia que el
+   * comercio sube (un café, una hamburguesa). Se dibuja dentro de cada casillero
+   * en la banda de Apple —lleno sólido, vacío tenue— usando solo su forma. Si no
+   * lo sube, el sello lleno muestra un tilde.
+   */
+  stampIconUrl?: string;
 }
 
 /**
