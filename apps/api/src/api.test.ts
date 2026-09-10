@@ -548,7 +548,57 @@ describe("aviso al POS", () => {
     // exactamente eso al buscar al cliente, sin depender de ninguna notificación.
     expect(res.json().balance).toBe(15);
     expect(res.json().availableRewards).toEqual([
-      { id: expect.any(String), name: "Café gratis", cost: 10 },
+      {
+        id: expect.any(String),
+        name: "Café gratis",
+        cost: 10,
+        // El POS necesita saber qué es y cómo se entrega para poder aplicarlo.
+        // Los beneficios creados sin especificar nada son lo que ya eran: un
+        // producto sin vincular que alguien entrega a mano.
+        kind: "free_item",
+        value: null,
+        externalProductId: null,
+        entrega: "aparte",
+      },
     ]);
+  });
+
+  it("no ofrece un beneficio que el cliente todavía no puede canjear por nivel", async () => {
+    const elmenu = await tokenFor("elmenu");
+    await setupMerchant(elmenu, "r-1", "don-julio", {
+      tiers: [
+        { name: "Bronce", min: 0 },
+        { name: "Oro", min: 500 },
+      ],
+    });
+    const card = await enroll(elmenu, "r-1", "0993427654");
+
+    // Un beneficio barato pero reservado a un nivel que el cliente no alcanzó.
+    await call(elmenu, "POST", "/v1/rewards", {
+      merchant: "r-1",
+      name: "Postre de la casa",
+      cost: 5,
+      minTier: "Oro",
+    });
+
+    await call(elmenu, "POST", "/v1/events", {
+      merchant: "r-1",
+      idempotencyKey: "order-1",
+      type: "order.paid",
+      amount: 150_000,
+      membership: { id: card.membershipId },
+    });
+
+    const res = await call(
+      elmenu,
+      "GET",
+      "/v1/memberships/lookup?merchant=r-1&phone=0993427654",
+    );
+
+    // Le sobra el saldo (15 puntos contra 5), pero le falta el nivel. Antes
+    // aparecía igual y el rechazo llegaba al canjear: el cajero se lo ofrecía
+    // al cliente y después no se lo podía dar.
+    expect(res.json().balance).toBe(15);
+    expect(res.json().availableRewards).toEqual([]);
   });
 });

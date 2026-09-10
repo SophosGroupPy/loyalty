@@ -194,6 +194,11 @@ export const notification = pgTable("notification", {
   campaignId: uuid("campaign_id"),
   scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
   sentAt: timestamp("sent_at", { withTimezone: true }),
+  /**
+   * Entrega efectiva a Google. Es lo que cuenta el cupo diario: el tope de
+   * 3/24 h es de Google, y Apple no debe gastarlo.
+   */
+  googleSentAt: timestamp("google_sent_at", { withTimezone: true }),
   suppressedReason: text("suppressed_reason"),
   supersededBy: uuid("superseded_by"),
   lastError: text("last_error"),
@@ -241,6 +246,20 @@ export const reward = pgTable("reward", {
   terms: text("terms"),
   /** Nivel mínimo para canjear. Null = lo puede canjear cualquiera. */
   minTier: text("min_tier"),
+  /** Qué es: un producto del menú, un porcentaje o un monto fijo. */
+  kind: text("kind").$type<"free_item" | "percentage" | "fixed">().notNull(),
+  /** El 20 de "20 %", o los guaraníes del monto fijo. Null en `free_item`. */
+  value: integer("value"),
+  /** El producto en el sistema del comercio, cuando el beneficio es un producto. */
+  externalProductId: text("external_product_id"),
+  /**
+   * Cómo llega a manos del cliente.
+   *
+   * `ticket` descuenta de la venta —entra en el arqueo y en la factura—;
+   * `aparte` solo registra el canje y no toca los totales. Es decisión del
+   * comercio y no del tipo: el mismo café gratis puede ir de las dos formas.
+   */
+  entrega: text("entrega").$type<"aparte" | "ticket">().notNull(),
   status: text("status").$type<"active" | "archived">().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -267,6 +286,10 @@ export const redemption = pgTable("redemption", {
   rewardId: uuid("reward_id").notNull(),
   ledgerEntryId: uuid("ledger_entry_id").notNull(),
   redeemedBy: text("redeemed_by").notNull(),
+  /** El pedido del comercio contra el que se usó. Null si se entregó suelto. */
+  externalOrderId: text("external_order_id"),
+  /** Cuánta plata representó, para poder cruzar canjes contra ventas. */
+  discountAmount: integer("discount_amount"),
   redeemedAt: timestamp("redeemed_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

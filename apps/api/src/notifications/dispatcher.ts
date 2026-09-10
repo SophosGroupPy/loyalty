@@ -161,10 +161,24 @@ export interface RenderedNotification {
   kind: NotificationKind;
   header: string;
   body: string;
+  /**
+   * `false` cuando la tarjeta ya gastó el cupo diario de Google.
+   *
+   * No cancela el aviso: Apple no tiene tope de plataforma, así que se entrega
+   * igual por ahí. Es la diferencia entre "hoy no le podemos escribir" y "hoy no
+   * le podemos escribir *por Google*".
+   */
+  allowGoogle: boolean;
+}
+
+/** A qué wallets entregó de verdad un envío. */
+export interface SendOutcome {
+  apple: boolean;
+  google: boolean;
 }
 
 export interface NotificationSender {
-  send(notification: RenderedNotification): Promise<void>;
+  send(notification: RenderedNotification): Promise<SendOutcome>;
 }
 
 /**
@@ -245,13 +259,16 @@ type Outcome =
   | "card_inactive"
   | "budget_exhausted";
 
+/** O se cierra el aviso con un motivo, o se manda diciendo si Google entra. */
+type Decision = Outcome | { allowGoogle: boolean };
+
 async function processOne(
   db: Db,
   sender: NotificationSender,
   item: DueRow,
   now: Date,
 ): Promise<Outcome> {
-  const decision = await db.drizzle.transaction(async (tx): Promise<Outcome | "send"> => {
+  const decision = await db.drizzle.transaction(async (tx): Promise<Decision> => {
     // Se relee bloqueando: entre el listado y el procesamiento otro worker pudo
     // haber tomado la misma fila.
     const still = await rows<{ id: string }>(
@@ -287,34 +304,47 @@ async function processOne(
       return "rescheduled";
     }
 
-    const used = await rows<{ count: number }>(
+    // El cupo cuenta entregas a GOOGLE, no avisos enviados. Un aviso que salió
+    // solo por Apple no gasta cupo: el tope de 3/24 h lo impone Google, y Apple
+    // no tiene ninguno.
+    //
+    // Ya no se suprime el aviso acá: quedarse sin cupo de Google no es quedarse
+    // sin destino. Se le avisa al canal con `allowGoogle` y él decide —es el
+    // único que sabe qué wallets tiene puestas esta tarjeta—. Si tampoco había
+    // Apple, el canal lo dice lanzando `NoInstalledPassError`, y recién ahí se
+    // registra el motivo.
+    const usado = await rows<{ count: number }>(
       tx,
       sql`SELECT count(*)::int AS count FROM notification
           WHERE membership_id = ${item.membership_id}
             AND channel = ${item.channel}
-            AND sent_at > ${new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()}`,
+            AND google_sent_at > ${new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()}`,
     );
 
-    if ((used[0]?.count ?? 0) >= budgetFor(item.kind)) {
-      await suppress(tx, item.id, "budget_exhausted");
-      return "budget_exhausted";
-    }
-
-    return "send";
+    return { allowGoogle: (usado[0]?.count ?? 0) < budgetFor(item.kind) };
   });
 
-  if (decision !== "send") return decision;
+  if (typeof decision === "string") return decision;
 
-  const rendered = await render(db, item);
+  const rendered = await render(db, item, decision.allowGoogle);
 
+  let entrega: SendOutcome;
   try {
-    await sender.send(rendered);
+    entrega = await sender.send(rendered);
   } catch (error) {
     // "No hay pase instalado" no es un fallo de envío: es que la persona no
     // agregó la tarjeta a ninguna wallet. Se registra aparte para que el reporte
     // lo distinga de algo que sí se rompió.
     const noTarget = error instanceof NoInstalledPassError;
-    const reason: Outcome = noTarget ? "no_installed_pass" : "send_failed";
+    // Sin destino y con Google salteado por cupo, el motivo honesto es el cupo y
+    // no "todavía no agregó la tarjeta". El cupo solo puede estar agotado si ya
+    // hubo entregas a Google, así que llegar acá implica que sí tenía pase de
+    // Google y que lo que faltó fue lugar, no tarjeta.
+    const reason: Outcome = !noTarget
+      ? "send_failed"
+      : decision.allowGoogle
+        ? "no_installed_pass"
+        : "budget_exhausted";
     const message = error instanceof Error ? error.message : String(error);
     await rows(
       db.drizzle,
@@ -325,9 +355,14 @@ async function processOne(
     return reason;
   }
 
+  // `google_sent_at` solo si Google entregó: es lo que consume cupo. Un aviso que
+  // salió únicamente por Apple queda con `sent_at` y sin cupo gastado.
   await rows(
     db.drizzle,
-    sql`UPDATE notification SET sent_at = ${now.toISOString()} WHERE id = ${item.id}`,
+    sql`UPDATE notification
+        SET sent_at = ${now.toISOString()},
+            google_sent_at = ${entrega.google ? now.toISOString() : null}
+        WHERE id = ${item.id}`,
   );
   return "sent";
 }
@@ -343,13 +378,18 @@ async function suppress(tx: Executor, id: string, reason: string): Promise<void>
  * que se encoló el aviso, recibe el saldo final y el total acumulado, no el
  * primero de los tres.
  */
-async function render(db: Db, item: DueRow): Promise<RenderedNotification> {
+async function render(
+  db: Db,
+  item: DueRow,
+  allowGoogle: boolean,
+): Promise<RenderedNotification> {
   const base = {
     id: item.id,
     membershipId: item.membership_id,
     merchantId: item.merchant_id,
     channel: item.channel,
     kind: item.kind,
+    allowGoogle,
   };
 
   if (item.kind === "campaign") {

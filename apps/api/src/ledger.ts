@@ -283,6 +283,15 @@ export interface RedeemInput {
   rewardId: string;
   /** Quién autorizó el canje: 'staff:<id>'. */
   redeemedBy: string;
+  /**
+   * El pedido del producto de origen contra el que se usó, si hubo uno.
+   *
+   * Es lo que permite cruzar lo canjeado con lo vendido. Va suelto y no como
+   * clave foránea: el pedido vive en la base del otro sistema.
+   */
+  externalOrderId?: string;
+  /** Cuánta plata representó el canje, cuando descontó de la venta. */
+  discountAmount?: number;
 }
 
 export type RedeemOutput =
@@ -388,9 +397,11 @@ export async function redeem(db: Db, input: RedeemInput): Promise<RedeemOutput> 
     const redemption = await rows<{ id: string }>(
       tx,
       sql`INSERT INTO redemption
-            (membership_id, merchant_id, reward_id, ledger_entry_id, redeemed_by)
+            (membership_id, merchant_id, reward_id, ledger_entry_id, redeemed_by,
+             external_order_id, discount_amount)
           VALUES (${membership.id}, ${membership.merchant_id}, ${reward.id},
-                  ${ledgerEntryId}, ${input.redeemedBy})
+                  ${ledgerEntryId}, ${input.redeemedBy},
+                  ${input.externalOrderId ?? null}, ${input.discountAmount ?? null})
           RETURNING id`,
     );
 

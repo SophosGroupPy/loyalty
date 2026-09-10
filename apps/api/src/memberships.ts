@@ -206,7 +206,19 @@ export interface MembershipView {
   unit: "points" | "stamps";
   status: string;
   /** Beneficios que este cliente ya puede canjear, listos para mostrar en el POS. */
-  availableRewards: { id: string; name: string; cost: number }[];
+  availableRewards: {
+    id: string;
+    name: string;
+    cost: number;
+    /** Qué es: producto del menú, porcentaje o monto fijo. */
+    kind: "free_item" | "percentage" | "fixed";
+    /** El 20 de "20 %", o los guaraníes del monto. Null en un producto. */
+    value: number | null;
+    /** El producto en el sistema del comercio, si el beneficio es un producto. */
+    externalProductId: string | null;
+    /** `ticket` descuenta de la venta; `aparte` no la toca. */
+    entrega: "aparte" | "ticket";
+  }[];
 }
 
 /**
@@ -235,17 +247,18 @@ export async function lookup(
     tier: string | null;
     status: string;
     kind: "points" | "stamps";
+    config: { tiers?: { name: string; min: number }[] } | null;
   }>(
     db.drizzle,
     phone
-      ? sql`SELECT m.id, m.serial_number, m.display_name, m.balance, m.tier, m.status, p.kind
+      ? sql`SELECT m.id, m.serial_number, m.display_name, m.balance, m.tier, m.status, p.kind, p.config
             FROM membership m
             JOIN person per ON per.id = m.person_id
             JOIN program p ON p.id = m.program_id
             WHERE m.merchant_id = ${merchantId}
               AND per.phone_e164 = ${phone}
               AND per.deleted_at IS NULL`
-      : sql`SELECT m.id, m.serial_number, m.display_name, m.balance, m.tier, m.status, p.kind
+      : sql`SELECT m.id, m.serial_number, m.display_name, m.balance, m.tier, m.status, p.kind, p.config
             FROM membership m
             JOIN person per ON per.id = m.person_id
             JOIN program p ON p.id = m.program_id
@@ -257,14 +270,40 @@ export async function lookup(
   const membership = found[0];
   if (!membership) return null;
 
-  const rewards = await rows<{ id: string; name: string; cost: number }>(
+  const rewards = await rows<{
+    id: string;
+    name: string;
+    cost: number;
+    min_tier: string | null;
+    kind: "free_item" | "percentage" | "fixed";
+    value: number | null;
+    external_product_id: string | null;
+    entrega: "aparte" | "ticket";
+  }>(
     db.drizzle,
-    sql`SELECT id, name, cost FROM reward
+    sql`SELECT id, name, cost, min_tier, kind, value, external_product_id, entrega
+        FROM reward
         WHERE merchant_id = ${merchantId}
           AND status = 'active'
           AND cost <= ${membership.balance}
         ORDER BY cost DESC`,
   );
+
+  // El candado de nivel se aplica acá y no solo al canjear.
+  //
+  // Antes un beneficio bloqueado aparecía como disponible y recién se rechazaba
+  // al intentar el canje: el cajero se lo ofrecía al cliente y después no se lo
+  // podía dar. Se replica la regla de `redeem()`, incluido su caso raro — si el
+  // nivel ya no existe en la config, el candado queda sin efecto en vez de trabar
+  // un canje legítimo por un cambio de configuración del comercio.
+  const canjeables = rewards.filter((reward) => {
+    if (!reward.min_tier) return true;
+    const requerido =
+      membership.kind === "points"
+        ? membership.config?.tiers?.find((t) => t.name === reward.min_tier)
+        : undefined;
+    return !requerido || membership.balance >= requerido.min;
+  });
 
   return {
     id: membership.id,
@@ -274,6 +313,14 @@ export async function lookup(
     tier: membership.tier,
     unit: membership.kind === "stamps" ? "stamps" : "points",
     status: membership.status,
-    availableRewards: rewards,
+    availableRewards: canjeables.map((r) => ({
+      id: r.id,
+      name: r.name,
+      cost: r.cost,
+      kind: r.kind,
+      value: r.value,
+      externalProductId: r.external_product_id,
+      entrega: r.entrega,
+    })),
   };
 }

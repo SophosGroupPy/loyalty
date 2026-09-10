@@ -82,6 +82,17 @@ export function enrollmentPage(b: EnrollmentBranding): string {
     ? `<img class="logo" src="${esc(b.logoUrl)}" alt="" onerror="this.style.display='none'">`
     : `<div class="logo logo--ph" aria-hidden="true"></div>`;
 
+  // El favicon de la pestaña es el logo del comercio, no el nuestro: la persona
+  // llega a la tarjeta de su bar o restaurante y en el navegador tiene que ver
+  // esa marca, igual que en el menú digital del mismo comercio. Se hereda del
+  // logo que ya cargó en el producto; sin type para que sirva igual sea png,
+  // jpg o svg. Si no hay logo, se omite y el navegador usa su ícono por defecto
+  // en vez de mostrar una marca ajena.
+  const favicon = b.logoUrl
+    ? `<link rel="icon" href="${esc(b.logoUrl)}">
+<link rel="apple-touch-icon" href="${esc(b.logoUrl)}">`
+    : "";
+
   return `<!doctype html>
 <html lang="es">
 <head>
@@ -89,6 +100,7 @@ export function enrollmentPage(b: EnrollmentBranding): string {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex">
 <title>${esc(b.programName)}</title>
+${favicon}
 <style>
   :root { --marca: ${marca}; --sobre: ${sobreMarca}; }
   * { box-sizing: border-box; }

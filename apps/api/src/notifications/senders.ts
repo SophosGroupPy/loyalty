@@ -10,6 +10,7 @@ import {
   NoInstalledPassError,
   type NotificationSender,
   type RenderedNotification,
+  type SendOutcome,
 } from "./dispatcher.js";
 
 /**
@@ -36,8 +37,8 @@ export function createWalletSender(
   apple?: AppleMessageDeliverer,
 ): NotificationSender {
   return {
-    async send(notification: RenderedNotification) {
-      let entregado = false;
+    async send(notification: RenderedNotification): Promise<SendOutcome> {
+      const entrega: SendOutcome = { apple: false, google: false };
       // Un fallo REAL de transporte en una wallet no puede tumbar a la otra. Pasa
       // seguido: una tarjeta tiene pase en las dos, el objeto de Google quedó 404
       // (nunca se guardó de verdad) y Apple sí está instalado. Si el error de
@@ -48,17 +49,22 @@ export function createWalletSender(
       // Google: `addMessage` si la tarjeta tiene pase de Google. Devuelve
       // `"no_pass"` sin tirar cuando no lo tiene; tira ante un fallo real de
       // transporte.
-      try {
-        const google = await passes.sendMessage(notification.membershipId, {
-          // El id del aviso alcanza como id de mensaje: es único y permite
-          // rastrear en la tarjeta cuál de los envíos registrados lo produjo.
-          id: notification.id,
-          header: notification.header,
-          body: notification.body,
-        });
-        if (google === "sent") entregado = true;
-      } catch (error) {
-        fallo = error;
+      //
+      // Se saltea entero cuando la tarjeta ya gastó el cupo diario de Google. No
+      // es lo mismo que suprimir el aviso: Apple sigue abajo.
+      if (notification.allowGoogle) {
+        try {
+          const google = await passes.sendMessage(notification.membershipId, {
+            // El id del aviso alcanza como id de mensaje: es único y permite
+            // rastrear en la tarjeta cuál de los envíos registrados lo produjo.
+            id: notification.id,
+            header: notification.header,
+            body: notification.body,
+          });
+          if (google === "sent") entrega.google = true;
+        } catch (error) {
+          fallo = error;
+        }
       }
 
       // Apple: el aviso es el valor del campo de novedades. En la pantalla el
@@ -71,13 +77,13 @@ export function createWalletSender(
             ? `${notification.header}: ${notification.body}`
             : notification.body;
           const resultado = await apple.deliver(notification.membershipId, texto);
-          if (resultado === "sent") entregado = true;
+          if (resultado === "sent") entrega.apple = true;
         } catch (error) {
           fallo = error;
         }
       }
 
-      if (entregado) return;
+      if (entrega.apple || entrega.google) return entrega;
       // Hubo un destino pero el transporte falló: es un envío fallido de verdad,
       // no un "sin pase instalado".
       if (fallo) throw fallo;
@@ -97,11 +103,14 @@ export function createConsoleSender(
   log: (message: string) => void = console.log,
 ): NotificationSender {
   return {
-    async send(notification: RenderedNotification) {
+    async send(notification: RenderedNotification): Promise<SendOutcome> {
       log(
         `[notificación:${notification.channel}] ${notification.kind} → ` +
           `${notification.header}: ${notification.body}`,
       );
+      // Nada viajó a Google, así que no gasta cupo: en desarrollo el tope diario
+      // no tiene por qué agotarse contra una consola.
+      return { apple: true, google: false };
     },
   };
 }
@@ -112,12 +121,12 @@ export function createRoutingSender(
   fallback?: NotificationSender,
 ): NotificationSender {
   return {
-    async send(notification: RenderedNotification) {
+    async send(notification: RenderedNotification): Promise<SendOutcome> {
       const sender = senders[notification.channel] ?? fallback;
       if (!sender) {
         throw new Error(`Sin canal configurado para "${notification.channel}".`);
       }
-      await sender.send(notification);
+      return await sender.send(notification);
     },
   };
 }

@@ -45,6 +45,29 @@ function recordingSender() {
   const sender: NotificationSender = {
     async send(notification) {
       sent.push(notification);
+      // Quien decide si Google entra es el despachador, y lo comunica en
+      // `allowGoogle`. El canal solo reporta a dónde llegó: así el cupo se
+      // cuenta sobre entregas reales a Google y no sobre avisos enviados.
+      return { apple: true, google: notification.allowGoogle };
+    },
+  };
+  return { sender, sent };
+}
+
+/**
+ * Tarjeta que está SOLO en Google.
+ *
+ * Es el único caso en que quedarse sin cupo deja el aviso sin destino: con pase
+ * de Apple siempre hay por dónde entregar. Sirve para probar que el reporte de
+ * una campaña sigue distinguiendo lo entregado de lo suprimido.
+ */
+function googleOnlySender() {
+  const sent: RenderedNotification[] = [];
+  const sender: NotificationSender = {
+    async send(notification) {
+      if (!notification.allowGoogle) throw new NoInstalledPassError();
+      sent.push(notification);
+      return { apple: false, google: true };
     },
   };
   return { sender, sent };
@@ -254,7 +277,7 @@ describe("agrupamiento", () => {
 });
 
 describe("presupuesto", () => {
-  it("corta al llegar al cupo diario de la plataforma", async () => {
+  it("el cupo diario corta Google, pero Apple sigue entregando", async () => {
     const membershipId = await seed({ coalesceMinutes: 0 });
     const merchant = await merchantId();
     const { sender, sent } = recordingSender();
@@ -274,10 +297,16 @@ describe("presupuesto", () => {
 
     const report = await dispatchDue(db, sender, { now: NOCHE });
 
-    // Las campañas tienen cupo reservado, uno menos que el total.
-    expect(report.sent).toBe(CAMPAIGN_BUDGET);
-    expect(report.suppressed.budget_exhausted).toBe(DAILY_BUDGET + 2 - CAMPAIGN_BUDGET);
-    expect(sent).toHaveLength(CAMPAIGN_BUDGET);
+    // El tope de 3/24 h lo impone Google, así que limita a cuántos se llega POR
+    // GOOGLE — no cuántos avisos salen. Apple no tiene tope de plataforma: el
+    // aviso igual se entrega, que es justamente lo que antes se perdía.
+    expect(report.sent).toBe(DAILY_BUDGET + 2);
+    expect(sent).toHaveLength(DAILY_BUDGET + 2);
+    expect(report.suppressed.budget_exhausted).toBeUndefined();
+
+    // Y de esos, solo los que entraron en el cupo tocaron Google. Las campañas
+    // tienen cupo reservado, uno menos que el total.
+    expect(sent.filter((n) => n.allowGoogle)).toHaveLength(CAMPAIGN_BUDGET);
   });
 
   it("una campaña nunca puede dejar sin cupo a un aviso transaccional", async () => {
@@ -298,7 +327,10 @@ describe("presupuesto", () => {
       });
     }
     await dispatchDue(db, sender, { now: MEDIODIA });
-    expect(sent).toHaveLength(CAMPAIGN_BUDGET);
+    // Las tres salen —Apple no tiene tope—, pero solo dos tocan Google: la
+    // reserva deja libre el último lugar de Google para lo transaccional.
+    expect(sent).toHaveLength(3);
+    expect(sent.filter((n) => n.allowGoogle)).toHaveLength(CAMPAIGN_BUDGET);
 
     // A la noche el cliente consume. Su aviso tiene que entrar igual, porque el
     // cupo de campañas es menor que el total justamente para dejarle lugar.
@@ -314,6 +346,8 @@ describe("presupuesto", () => {
 
     expect(report.sent).toBe(1);
     expect(sent.at(-1)?.kind).toBe("balance_changed");
+    // Y le quedaba lugar en Google: eso es lo que la reserva protege.
+    expect(sent.at(-1)?.allowGoogle).toBe(true);
   });
 
   it("prioriza lo transaccional cuando compiten por el último lugar", async () => {
@@ -512,7 +546,9 @@ describe("campañas", () => {
   it("reporta entrega parcial en vez de un 'enviado' plano", async () => {
     const membershipId = await seed({ coalesceMinutes: 0 });
     const merchant = await merchantId();
-    const { sender } = recordingSender();
+    // Ana tiene la tarjeta solo en Google: sin cupo no hay por dónde entregarle.
+    // Con pase de Apple el aviso saldría igual y no habría nada que reportar.
+    const { sender } = googleOnlySender();
 
     // Ana ya recibió avisos hoy y se quedó sin cupo de campañas.
     for (let i = 0; i < CAMPAIGN_BUDGET; i++) {

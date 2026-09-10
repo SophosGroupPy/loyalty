@@ -21,6 +21,7 @@ const aviso: RenderedNotification = {
   kind: "campaign",
   header: "Miércoles de 2x1",
   body: "Traé un amigo",
+  allowGoogle: true,
 };
 
 /** Un `PassService` de mentira que solo responde a `sendMessage`. */
@@ -39,7 +40,7 @@ describe("sender de wallet", () => {
     };
 
     const sender = createWalletSender(fakePasses(async () => "no_pass"), apple);
-    await expect(sender.send(aviso)).resolves.toBeUndefined();
+    await expect(sender.send(aviso)).resolves.toEqual({ apple: true, google: false });
     // El título va adelante para no perder el gancho: en Apple el cliente ve el
     // valor del campo, no un título y un cuerpo aparte como en Google.
     expect(recibido).toEqual(["Miércoles de 2x1: Traé un amigo"]);
@@ -53,8 +54,37 @@ describe("sender de wallet", () => {
         return "sent";
       }),
     );
-    await expect(sender.send(aviso)).resolves.toBeUndefined();
+    await expect(sender.send(aviso)).resolves.toEqual({ apple: false, google: true });
     expect(mandado).toBe(true);
+  });
+
+  it("sin cupo de Google no toca Google, pero entrega igual por Apple", async () => {
+    // El caso que rompía en producción: el tope de 3/24 h es de Google, y al
+    // aplicarlo al aviso entero dejaba mudo a un cliente de iPhone —donde la
+    // plataforma no impone ningún tope—. Google se saltea; Apple entrega.
+    let tocaronGoogle = false;
+    const apple: AppleMessageDeliverer = { async deliver() { return "sent"; } };
+    const sender = createWalletSender(
+      fakePasses(async () => {
+        tocaronGoogle = true;
+        return "sent";
+      }),
+      apple,
+    );
+
+    await expect(sender.send({ ...aviso, allowGoogle: false })).resolves.toEqual({
+      apple: true,
+      google: false,
+    });
+    expect(tocaronGoogle).toBe(false);
+  });
+
+  it("sin cupo de Google y sin pase de Apple, no hay dónde entregar", async () => {
+    const apple: AppleMessageDeliverer = { async deliver() { return "no_target"; } };
+    const sender = createWalletSender(fakePasses(async () => "sent"), apple);
+    await expect(
+      sender.send({ ...aviso, allowGoogle: false }),
+    ).rejects.toBeInstanceOf(NoInstalledPassError);
   });
 
   it("si ninguna wallet tiene el pase, es NoInstalledPassError y no un fallo", async () => {
@@ -85,7 +115,7 @@ describe("sender de wallet", () => {
       }),
       apple,
     );
-    await expect(sender.send(aviso)).resolves.toBeUndefined();
+    await expect(sender.send(aviso)).resolves.toEqual({ apple: true, google: false });
   });
 
   it("si Google falla y Apple no tiene pase, es send_failed (propaga), no NoInstalledPass", async () => {

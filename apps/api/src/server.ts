@@ -93,6 +93,23 @@ import { CAMPAIGN_BUDGET, DAILY_BUDGET } from "./notifications/policy.js";
  * Deliberadamente no se le habla de "kinds" ni de prioridades internas: se le
  * dice cuándo se manda cada uno y para qué sirve.
  */
+/**
+ * Por qué un aviso no salió, en el idioma del comercio.
+ *
+ * Nunca se le habla de cupos de plataforma ni de `budget_exhausted`: se le dice
+ * la consecuencia, que es lo único sobre lo que puede decidir algo. Un motivo
+ * que no esté acá se muestra crudo antes que ocultarse — un aviso sin explicar
+ * es exactamente lo que hace que el comercio concluya "esto no funciona".
+ */
+const MOTIVO_DE_SUPRESION: Record<string, string> = {
+  budget_exhausted: "Ya recibió el máximo de avisos del día",
+  coalesced: "Se juntó con otro aviso del mismo cliente",
+  no_installed_pass: "Todavía no agregó la tarjeta a su billetera",
+  opted_out: "Pidió no recibir avisos",
+  card_inactive: "Su tarjeta está dada de baja",
+  send_failed: "No se pudo entregar",
+};
+
 const AUTOMATIC_KINDS = [
   {
     id: "balance_changed",
@@ -768,6 +785,15 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     name: z.string().min(1),
     cost: z.number().int().positive(),
     terms: z.string().optional(),
+    /**
+     * Nivel mínimo para canjear. Null o ausente = cualquiera.
+     *
+     * El resto de lo que define un beneficio —si es un producto o un descuento,
+     * y si descuenta del ticket— se configura desde la consola del comercio, que
+     * es donde están el menú y el criterio para elegirlo. Acá se toman los
+     * defaults: un producto sin vincular, entregado aparte.
+     */
+    minTier: z.string().max(20).nullable().optional(),
   });
 
   app.post("/v1/rewards", async (request, reply) => {
@@ -784,11 +810,19 @@ export function createServer(opts: ServerOptions): FastifyInstance {
         .send({ error: "no_active_program", message: "El comercio no tiene programa activo." });
     }
 
+    if (!nivelValido(program, parsed.data.minTier)) {
+      return reply.code(400).send({
+        error: "nivel_desconocido",
+        message: "El beneficio exige un nivel que el programa no tiene configurado.",
+      });
+    }
+
     const result = await rows<{ id: string }>(
       db.drizzle,
-      sql`INSERT INTO reward (program_id, merchant_id, name, cost, terms, status)
+      sql`INSERT INTO reward (program_id, merchant_id, name, cost, terms, min_tier, status)
           VALUES (${program.id}, ${merchant.id}, ${parsed.data.name},
-                  ${parsed.data.cost}, ${parsed.data.terms ?? null}, 'active')
+                  ${parsed.data.cost}, ${parsed.data.terms ?? null},
+                  ${parsed.data.minTier ?? null}, 'active')
           RETURNING id`,
     );
 
@@ -1090,6 +1124,10 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       phone: z.string().optional(),
     }),
     redeemedBy: z.string().min(1),
+    /** El pedido contra el que se usó, para poder cruzar canjes con ventas. */
+    orderId: z.string().min(1).max(120).optional(),
+    /** Cuánta plata descontó, cuando el beneficio descuenta del ticket. */
+    discountAmount: z.number().int().nonnegative().optional(),
   });
 
   app.post("/v1/redemptions", async (request, reply) => {
@@ -1111,6 +1149,10 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       membershipId,
       rewardId: parsed.data.rewardId,
       redeemedBy: parsed.data.redeemedBy,
+      ...(parsed.data.orderId ? { externalOrderId: parsed.data.orderId } : {}),
+      ...(parsed.data.discountAmount !== undefined
+        ? { discountAmount: parsed.data.discountAmount }
+        : {}),
     });
 
     if (!result.ok) {
@@ -3000,12 +3042,17 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       cost: number;
       terms: string | null;
       min_tier: string | null;
+      kind: string;
+      value: number | null;
+      external_product_id: string | null;
+      entrega: string;
       status: string;
       redemptions: number;
       can_afford: number;
     }>(
       db.drizzle,
       sql`SELECT r.id, r.name, r.cost, r.terms, r.min_tier, r.status,
+                 r.kind, r.value, r.external_product_id, r.entrega,
                  (SELECT count(*)::int FROM redemption rd WHERE rd.reward_id = r.id) AS redemptions,
                  (SELECT count(*)::int FROM membership m
                    WHERE m.merchant_id = r.merchant_id AND m.status = 'active'
@@ -3041,13 +3088,35 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     return Boolean(program.config?.tiers?.some((t) => t.name === minTier));
   }
 
-  const embedRewardBody = z.object({
-    name: z.string().min(1).max(80),
-    cost: z.number().int().positive(),
-    terms: z.string().max(200).optional(),
-    /** Nivel mínimo para canjear. Null o ausente = cualquiera. */
-    minTier: z.string().max(20).nullable().optional(),
-  });
+  const embedRewardBody = z
+    .object({
+      name: z.string().min(1).max(80),
+      cost: z.number().int().positive(),
+      terms: z.string().max(200).optional(),
+      /** Nivel mínimo para canjear. Null o ausente = cualquiera. */
+      minTier: z.string().max(20).nullable().optional(),
+      /** Qué es. Por defecto un producto, que es el caso común. */
+      kind: z.enum(["free_item", "percentage", "fixed"]).default("free_item"),
+      /** El 20 de "20 %", o los guaraníes del monto fijo. */
+      value: z.number().int().positive().nullable().optional(),
+      externalProductId: z.string().max(120).nullable().optional(),
+      /** Por defecto aparte: registrar el canje sin tocar la venta. */
+      entrega: z.enum(["aparte", "ticket"]).default("aparte"),
+    })
+    // Las mismas invariantes que la base, pero acá devuelven un mensaje que el
+    // comercio entiende en vez de una violación de constraint.
+    .refine((b) => (b.kind === "free_item" ? b.value == null : typeof b.value === "number"), {
+      message: "Un descuento necesita un valor, y un producto no lleva ninguno.",
+      path: ["value"],
+    })
+    .refine((b) => b.kind !== "percentage" || (b.value! >= 1 && b.value! <= 100), {
+      message: "El porcentaje tiene que estar entre 1 y 100.",
+      path: ["value"],
+    })
+    .refine((b) => !(b.entrega === "ticket" && b.kind === "free_item" && !b.externalProductId), {
+      message: "Para descontar el producto del ticket hay que elegir cuál es.",
+      path: ["externalProductId"],
+    });
 
   app.post("/embed/rewards", async (request, reply) => {
     const parsed = embedRewardBody.safeParse(request.body);
@@ -3068,10 +3137,13 @@ export function createServer(opts: ServerOptions): FastifyInstance {
 
     const created = await rows<{ id: string }>(
       db.drizzle,
-      sql`INSERT INTO reward (program_id, merchant_id, name, cost, terms, min_tier, status)
+      sql`INSERT INTO reward (program_id, merchant_id, name, cost, terms, min_tier,
+                              kind, value, external_product_id, entrega, status)
           VALUES (${program.id}, ${merchant.id}, ${parsed.data.name},
                   ${parsed.data.cost}, ${parsed.data.terms ?? null},
-                  ${parsed.data.minTier ?? null}, 'active')
+                  ${parsed.data.minTier ?? null}, ${parsed.data.kind},
+                  ${parsed.data.value ?? null}, ${parsed.data.externalProductId ?? null},
+                  ${parsed.data.entrega}, 'active')
           RETURNING id`,
     );
 
@@ -3091,10 +3163,21 @@ export function createServer(opts: ServerOptions): FastifyInstance {
         status: z.enum(["active", "archived"]).optional(),
         // `null` explícito saca el candado de nivel; ausente lo deja como está.
         minTier: z.string().max(20).nullable().optional(),
+        // Se puede corregir CÓMO se entrega y contra qué producto —son detalles
+        // operativos—, pero no qué es ni cuánto vale: eso es el trato por el que
+        // el cliente venía juntando puntos. Para cambiar el trato se archiva y se
+        // crea otro, igual que con el costo.
+        entrega: z.enum(["aparte", "ticket"]).optional(),
+        externalProductId: z.string().max(120).nullable().optional(),
       })
-      .refine((b) => b.status !== undefined || b.minTier !== undefined, {
-        message: "No hay nada que actualizar.",
-      })
+      .refine(
+        (b) =>
+          b.status !== undefined ||
+          b.minTier !== undefined ||
+          b.entrega !== undefined ||
+          b.externalProductId !== undefined,
+        { message: "No hay nada que actualizar." },
+      )
       .safeParse(request.body);
     if (!parsed.success) return badRequest(reply, parsed.error.issues);
 
@@ -3112,11 +3195,44 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       }
     }
 
+    // La invariante "para descontar un producto del ticket hay que saber cuál" se
+    // revisa contra el estado que VA A QUEDAR, no contra lo que llegó: un update
+    // parcial la rompe cambiando una sola de las dos mitades.
+    if (parsed.data.entrega !== undefined || parsed.data.externalProductId !== undefined) {
+      const actual = await rows<{
+        kind: string;
+        external_product_id: string | null;
+        entrega: string;
+      }>(
+        db.drizzle,
+        sql`SELECT kind, external_product_id, entrega FROM reward
+            WHERE id = ${request.params.id} AND merchant_id = ${merchant.id}`,
+      );
+      if (!actual[0]) return reply.code(404).send({ error: "not_found" });
+
+      const entrega = parsed.data.entrega ?? actual[0].entrega;
+      const producto =
+        parsed.data.externalProductId !== undefined
+          ? parsed.data.externalProductId
+          : actual[0].external_product_id;
+
+      if (entrega === "ticket" && actual[0].kind === "free_item" && !producto) {
+        return reply.code(400).send({
+          error: "producto_requerido",
+          message: "Para descontar el producto del ticket hay que elegir cuál es.",
+        });
+      }
+    }
+
     // Se arma el SET solo con lo que vino: un update parcial no puede pisar con
     // null el campo que quien llama no mandó.
     const sets = [];
     if (parsed.data.status !== undefined) sets.push(sql`status = ${parsed.data.status}`);
     if (parsed.data.minTier !== undefined) sets.push(sql`min_tier = ${parsed.data.minTier}`);
+    if (parsed.data.entrega !== undefined) sets.push(sql`entrega = ${parsed.data.entrega}`);
+    if (parsed.data.externalProductId !== undefined) {
+      sets.push(sql`external_product_id = ${parsed.data.externalProductId}`);
+    }
 
     const updated = await rows<{ id: string }>(
       db.drizzle,
@@ -3127,6 +3243,76 @@ export function createServer(opts: ServerOptions): FastifyInstance {
 
     if (!updated[0]) return reply.code(404).send({ error: "not_found" });
     return reply.send({ ok: true });
+  });
+
+  /**
+   * Historial de canjes.
+   *
+   * Es el control concreto: qué se llevó cada cliente, cuántos puntos le costó,
+   * cuánta plata representó y contra qué pedido. Un beneficio entregado "de
+   * palabra" nunca permitió cruzar lo canjeado con lo vendido; esto sí.
+   */
+  app.get("/embed/redemptions", async (request, reply) => {
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const found = await rows<{
+      id: string;
+      redeemed_at: string;
+      redeemed_by: string;
+      external_order_id: string | null;
+      discount_amount: number | null;
+      reward_name: string;
+      kind: string;
+      entrega: string;
+      points: number;
+      display_name: string | null;
+      phone_e164: string;
+    }>(
+      db.drizzle,
+      sql`SELECT rd.id, rd.redeemed_at, rd.redeemed_by, rd.external_order_id,
+                 rd.discount_amount, r.name AS reward_name, r.kind, r.entrega,
+                 le.amount AS points, m.display_name, p.phone_e164
+          FROM redemption rd
+          JOIN reward r ON r.id = rd.reward_id
+          JOIN ledger_entry le ON le.id = rd.ledger_entry_id
+          JOIN membership m ON m.id = rd.membership_id
+          JOIN person p ON p.id = m.person_id
+          WHERE rd.merchant_id = ${merchant.id}
+          ORDER BY rd.redeemed_at DESC
+          LIMIT 100`,
+    );
+
+    // El resumen va aparte y sobre los últimos 30 días: la lista se lee de a un
+    // canje, pero la pregunta del comercio es "cuánto estoy regalando por mes".
+    const totales = await rows<{ canjes: number; puntos: number; monto: number }>(
+      db.drizzle,
+      sql`SELECT count(*)::int AS canjes,
+                 COALESCE(sum(abs(le.amount)), 0)::int AS puntos,
+                 COALESCE(sum(rd.discount_amount), 0)::int AS monto
+          FROM redemption rd
+          JOIN ledger_entry le ON le.id = rd.ledger_entry_id
+          WHERE rd.merchant_id = ${merchant.id}
+            AND rd.redeemed_at > now() - interval '30 days'`,
+    );
+
+    return reply.send({
+      redemptions: found.map((r) => ({
+        id: r.id,
+        at: r.redeemed_at,
+        cliente: r.display_name?.trim() || r.phone_e164,
+        beneficio: r.reward_name,
+        kind: r.kind,
+        entrega: r.entrega,
+        // El asiento guarda el canje en negativo —descuenta saldo—; acá lo que
+        // se lee es cuánto costó, así que va en positivo.
+        puntos: Math.abs(r.points),
+        monto: r.discount_amount,
+        pedido: r.external_order_id,
+        autorizo: r.redeemed_by,
+      })),
+      ultimos30: totales[0] ?? { canjes: 0, puntos: 0, monto: 0 },
+    });
   });
 
   /**
@@ -3152,6 +3338,54 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       // El comercio no ve "3 pushes por pase cada 24 h": ve la consecuencia.
       dailyBudget: DAILY_BUDGET,
       campaignBudget: CAMPAIGN_BUDGET,
+    });
+  });
+
+  /**
+   * Historial de avisos: lo que salió y lo que no, con el motivo.
+   *
+   * Sin esto el comercio ve silencio y concluye que el módulo está roto —pasó—,
+   * cuando la verdad suele ser "se juntó con otro" o "ya recibió el máximo de
+   * hoy". Un aviso suprimido explicado es información; uno callado es un ticket
+   * de soporte.
+   */
+  app.get("/embed/notifications/history", async (request, reply) => {
+    const merchant = await embedMerchant(request);
+    if (!merchant) return reply.code(401).send({ error: "unauthorized" });
+
+    const found = await rows<{
+      id: string;
+      kind: string;
+      created_at: string;
+      sent_at: string | null;
+      suppressed_reason: string | null;
+      display_name: string | null;
+      phone_e164: string;
+    }>(
+      db.drizzle,
+      sql`SELECT n.id, n.kind, n.created_at, n.sent_at, n.suppressed_reason,
+                 m.display_name, p.phone_e164
+          FROM notification n
+          JOIN membership m ON m.id = n.membership_id
+          JOIN person p ON p.id = m.person_id
+          WHERE n.merchant_id = ${merchant.id}
+          ORDER BY n.created_at DESC
+          LIMIT 60`,
+    );
+
+    return reply.send({
+      items: found.map((n) => ({
+        id: n.id,
+        kind: n.kind,
+        // El teléfono es el respaldo: una tarjeta puede no tener nombre cargado,
+        // y "un cliente sin nombre" no le sirve a nadie para entender qué pasó.
+        cliente: n.display_name?.trim() || n.phone_e164,
+        at: n.sent_at ?? n.created_at,
+        estado: n.sent_at ? "entregado" : n.suppressed_reason ? "suprimido" : "pendiente",
+        motivo: n.suppressed_reason
+          ? (MOTIVO_DE_SUPRESION[n.suppressed_reason] ?? n.suppressed_reason)
+          : null,
+      })),
     });
   });
 

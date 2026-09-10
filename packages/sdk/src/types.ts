@@ -60,6 +60,18 @@ export interface AvailableReward {
   id: string;
   name: string;
   cost: number;
+  /** Qué es: un producto del menú, un porcentaje o un monto fijo. */
+  kind: "free_item" | "percentage" | "fixed";
+  /** El 20 de "20 %", o los guaraníes del monto. Null en un producto. */
+  value: number | null;
+  /** El producto en el sistema del comercio, si el beneficio es un producto. */
+  externalProductId: string | null;
+  /**
+   * Cómo llega a manos del cliente: `ticket` descuenta de la venta, `aparte`
+   * solo registra el canje. Es lo que el POS necesita para saber si tiene que
+   * tocar el pedido o no.
+   */
+  entrega: "aparte" | "ticket";
 }
 
 export interface MembershipView {
