@@ -152,6 +152,31 @@ describe("landing pública", () => {
     const res = await app.inject({ method: "GET", url: "/public/merchants/no-existe" });
     expect(res.statusCode).toBe(404);
   });
+
+  it("sirve la landing de alta en HTML con la marca del comercio", async () => {
+    const res = await app.inject({ method: "GET", url: "/don-julio" });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/html");
+    // Marca del comercio embebida: el cliente conoce al comercio, no a Sophos.
+    // (Sophos sí aparece nombrado en el consentimiento de identidad compartida,
+    // como responsable del dato — eso es correcto, no es branding.)
+    expect(res.body).toContain("Don Julio");
+    // El flujo usa los endpoints públicos existentes.
+    expect(res.body).toContain("/public/enrollment/start");
+    expect(res.body).toContain("/public/enrollment/verify");
+  });
+
+  it("la landing de un comercio inexistente es una página, no un JSON", async () => {
+    const res = await app.inject({ method: "GET", url: "/no-existe-123" });
+    expect(res.statusCode).toBe(404);
+    expect(res.headers["content-type"]).toContain("text/html");
+  });
+
+  it("la landing no le roba las rutas estáticas (p. ej. /health)", async () => {
+    const res = await app.inject({ method: "GET", url: "/health" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ status: "ok" });
+  });
 });
 
 describe("camino feliz", () => {

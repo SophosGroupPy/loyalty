@@ -83,6 +83,7 @@ import {
   verifyEnrollment,
   type OtpSender,
 } from "./enrollment.js";
+import { enrollmentPage } from "./enrollment-page.js";
 import { campaignReport, dispatchDue, enqueue } from "./notifications/dispatcher.js";
 import { CAMPAIGN_BUDGET, DAILY_BUDGET } from "./notifications/policy.js";
 
@@ -2204,15 +2205,29 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       return reply.code(status).send({ error: result.status, ...result });
     }
 
-    // La tarjeta ya existe; el pase es lo que falta. Si Google no está
-    // configurado el alta igual valió: el cliente tiene su tarjeta web.
+    // La tarjeta ya existe; el pase es lo que falta. Si una wallet no está
+    // configurada el alta igual valió: el cliente tiene la otra, o su número.
     let saveUrl: string | null = null;
     if (passes.enabled) {
       try {
         saveUrl = (await passes.issueGooglePass(result.membership.membershipId, merchant.id))
           .saveUrl;
       } catch (error) {
-        app.log.error({ err: error }, "no se pudo emitir el pase tras el alta");
+        app.log.error({ err: error }, "no se pudo emitir el pase de Google tras el alta");
+      }
+    }
+
+    // Link de descarga del pase de Apple, si el comercio tiene certificado. La
+    // landing detecta el iPhone y ofrece el botón correcto; en Android usa el de
+    // Google. El objeto de Apple se arma al bajar el .pkpass desde este link.
+    let appleUrl: string | null = null;
+    const appleBase = (opts.appleWallet?.webServiceURL ?? "").replace(/\/+$/, "");
+    if (appleIssuer.enabled && appleBase && (await hasSigningMaterial(db, merchant.id))) {
+      try {
+        const { token } = await issuePassDownloadToken(signingKey, result.membership.membershipId);
+        appleUrl = `${appleBase}/public/passes/${token}`;
+      } catch (error) {
+        app.log.error({ err: error }, "no se pudo emitir el link de Apple tras el alta");
       }
     }
 
@@ -2224,7 +2239,48 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       /** `true` si la persona ya existía: el alta de un toque del ecosistema. */
       personExisted: result.membership.personExisted,
       saveUrl,
+      appleUrl,
     });
+  });
+
+  /**
+   * Landing de alta white-label. La abre el cliente al escanear el QR impreso en
+   * la mesa/mostrador (`tarjeta.sophosgroup.com.py/{slug}`).
+   *
+   * Va como `/:slug` de primer nivel a propósito: es el link corto que se imprime,
+   * sin prefijos. El router de Fastify prioriza las rutas estáticas sobre esta
+   * paramétrica, así que /health, /v1, /embed, /apple y /public siguen ganando;
+   * acá cae sólo un único segmento suelto, que es el slug de un comercio. Sirve
+   * HTML directo —no JSON— porque quien mira es una persona, no un servidor.
+   */
+  app.get<{ Params: { slug: string } }>("/:slug", async (request, reply) => {
+    const merchant = await publicMerchant(request.params.slug);
+    if (!merchant || !merchant.program_id) {
+      return reply
+        .code(404)
+        .header("content-type", "text/html; charset=utf-8")
+        .header("cache-control", "no-store")
+        .send(
+          paginaDeProblema(
+            "No encontramos este programa",
+            "Revisá el link, o pedí el QR de nuevo en el local.",
+          ),
+        );
+    }
+
+    return reply
+      .header("content-type", "text/html; charset=utf-8")
+      .header("cache-control", "no-store")
+      .send(
+        enrollmentPage({
+          slug: request.params.slug,
+          displayName: merchant.display_name,
+          programName: merchant.design?.programName ?? merchant.display_name,
+          logoUrl: merchant.design?.logoUrl ?? null,
+          backgroundColor: merchant.design?.backgroundColor ?? "#1F2937",
+          unit: merchant.program_kind === "stamps" ? "stamps" : "points",
+        }),
+      );
   });
 
   // --------------------------------------------------------------------------
