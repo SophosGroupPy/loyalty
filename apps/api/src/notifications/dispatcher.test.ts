@@ -19,6 +19,7 @@ import {
   campaignReport,
   dispatchDue,
   enqueue,
+  NoInstalledPassError,
   type NotificationSender,
   type RenderedNotification,
 } from "./dispatcher.js";
@@ -139,6 +140,39 @@ async function statuses(membershipId: string) {
 }
 
 // ---------------------------------------------------------------------------
+
+describe("sin pase instalado", () => {
+  it("se registra como no_installed_pass, no como send_failed", async () => {
+    // Una tarjeta a la que nadie agregó el pase en ninguna wallet no es un fallo
+    // de envío: es que no hay dónde entregar. El reporte tiene que distinguirlo,
+    // o el comercio lee "falló" cuando la verdad es "no la agregaron".
+    const membershipId = await seed();
+    const merchant = await merchantId();
+    await enqueue(db, {
+      membershipId,
+      merchantId: merchant,
+      kind: "campaign",
+      campaignId: await makeCampaign(merchant),
+      header: "Promo",
+      body: "x",
+      now: NOCHE,
+    });
+
+    const sender: NotificationSender = {
+      async send() {
+        throw new NoInstalledPassError();
+      },
+    };
+    const report = await dispatchDue(db, sender, { now: NOCHE });
+
+    expect(report.suppressed.no_installed_pass).toBe(1);
+    expect(report.suppressed.send_failed).toBeUndefined();
+
+    const [n] = await statuses(membershipId);
+    expect(n?.suppressed_reason).toBe("no_installed_pass");
+    expect(n?.sent_at).toBeNull();
+  });
+});
 
 describe("agrupamiento", () => {
   it("seis consumos seguidos producen un solo aviso, y el resto queda explicado", async () => {

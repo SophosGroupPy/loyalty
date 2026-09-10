@@ -75,11 +75,30 @@ export async function registerDevice(
   db: Db,
   input: RegistrationInput,
 ): Promise<"created" | "updated" | "unknown_pass"> {
-  const membership = await rows<{ id: string }>(
+  const membership = await rows<{ id: string; merchant_id: string }>(
     db.drizzle,
-    sql`SELECT id FROM membership WHERE serial_number = ${input.serialNumber}`,
+    sql`SELECT id, merchant_id FROM membership WHERE serial_number = ${input.serialNumber}`,
   );
   if (membership.length === 0) return "unknown_pass";
+  const member = membership[0]!;
+
+  // Asegura la fila de pase de Apple.
+  //
+  // Sin ella, todo el mecanismo de actualización de Apple queda mudo: el web
+  // service arma la respuesta de "qué cambió" con un JOIN contra `pass_instance`
+  // (ver `passesUpdatedSince`), así que sin fila el teléfono recibe el push pero
+  // se le contesta "nada nuevo" y nunca vuelve a pedir el pase. Se crea acá
+  // —cuando el dispositivo registra— porque registrarse es la señal de que el
+  // pase quedó instalado; antes de eso no hay a quién empujar. `external_id` es
+  // el serial, que es la identidad del pase del lado de Apple.
+  await rows(
+    db.drizzle,
+    sql`INSERT INTO pass_instance
+          (membership_id, merchant_id, platform, external_id, state)
+        VALUES (${member.id}, ${member.merchant_id}, 'apple', ${input.serialNumber}, 'active')
+        ON CONFLICT (membership_id, platform) DO UPDATE
+          SET state = 'active', last_error = NULL`,
+  );
 
   const existing = await rows<{ id: string }>(
     db.drizzle,
@@ -105,7 +124,7 @@ export async function registerDevice(
           (device_library_identifier, pass_type_identifier, serial_number,
            push_token, membership_id)
         VALUES (${input.deviceLibraryIdentifier}, ${input.passTypeIdentifier},
-                ${input.serialNumber}, ${input.pushToken}, ${membership[0]!.id})`,
+                ${input.serialNumber}, ${input.pushToken}, ${member.id})`,
   );
   return "created";
 }

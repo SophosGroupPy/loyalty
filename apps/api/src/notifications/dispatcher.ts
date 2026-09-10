@@ -167,6 +167,21 @@ export interface NotificationSender {
   send(notification: RenderedNotification): Promise<void>;
 }
 
+/**
+ * La tarjeta no tiene pase instalado en ninguna wallet.
+ *
+ * Lo lanza el canal cuando ni Google ni Apple tienen dónde entregar. No es un
+ * fallo de envío —no se rompió nada—, es la ausencia de un destino; el
+ * despachador lo registra aparte para que el comercio no lea "falló" cuando la
+ * verdad es "esta persona todavía no agregó la tarjeta".
+ */
+export class NoInstalledPassError extends Error {
+  constructor() {
+    super("La tarjeta no tiene pase instalado en ninguna wallet.");
+    this.name = "NoInstalledPassError";
+  }
+}
+
 export interface DispatchReport {
   sent: number;
   suppressed: Record<string, number>;
@@ -225,6 +240,7 @@ type Outcome =
   | "sent"
   | "rescheduled"
   | "send_failed"
+  | "no_installed_pass"
   | "opted_out"
   | "card_inactive"
   | "budget_exhausted";
@@ -294,14 +310,19 @@ async function processOne(
   try {
     await sender.send(rendered);
   } catch (error) {
+    // "No hay pase instalado" no es un fallo de envío: es que la persona no
+    // agregó la tarjeta a ninguna wallet. Se registra aparte para que el reporte
+    // lo distinga de algo que sí se rompió.
+    const noTarget = error instanceof NoInstalledPassError;
+    const reason: Outcome = noTarget ? "no_installed_pass" : "send_failed";
     const message = error instanceof Error ? error.message : String(error);
     await rows(
       db.drizzle,
       sql`UPDATE notification
-          SET suppressed_reason = 'send_failed', last_error = ${message}
+          SET suppressed_reason = ${reason}, last_error = ${noTarget ? null : message}
           WHERE id = ${item.id}`,
     );
-    return "send_failed";
+    return reason;
   }
 
   await rows(

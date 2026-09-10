@@ -54,6 +54,7 @@ interface CardRow {
   member_name: string | null;
   issued_at: Date;
   content_updated_at: Date;
+  news: string | null;
 }
 
 export interface AppleIssuerOptions {
@@ -220,7 +221,8 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
                    p.kind AS program_kind, p.config AS program_config,
                    m.display_name AS member_name,
                    m.issued_at,
-                   COALESCE(pi.content_updated_at, m.issued_at) AS content_updated_at
+                   COALESCE(pi.content_updated_at, m.issued_at) AS content_updated_at,
+                   pi.news
             FROM membership m
             JOIN merchant mer ON mer.id = m.merchant_id
             JOIN product prod ON prod.id = mer.product_id
@@ -316,6 +318,10 @@ export function createAppleIssuer(db: Db, opts: AppleIssuerOptions): AppleIssuer
         balance: card.balance,
         ...(card.tier ? { tier: card.tier } : {}),
         ...(card.member_name ? { memberName: card.member_name } : {}),
+        // La última novedad enviada. Al bajar el pase, iOS compara el valor de
+        // este campo con el que tenía: si cambió, muestra el aviso. Sin esto el
+        // campo quedaba siempre en su texto por defecto y ninguna campaña se veía.
+        ...(card.news ? { news: card.news } : {}),
         ...(rewardAt > 0 ? { stampsTarget: rewardAt } : {}),
         memberSince: new Date(card.issued_at).toISOString(),
         locations: locations.map((l) => ({

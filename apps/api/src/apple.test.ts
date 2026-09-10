@@ -143,6 +143,44 @@ describe("registro del dispositivo", () => {
     expect((await register()).statusCode).toBe(200);
   });
 
+  it("crea la fila de pase de Apple cuando el registro es el primero", async () => {
+    // En producción nada crea el `pass_instance` de Apple hasta que el dispositivo
+    // registra la tarjeta. Sin esa fila, el web service arma la lista de "qué
+    // cambió" con un JOIN vacío y el iPhone nunca vuelve a pedir el pase: la
+    // tarjeta no se actualiza sola. Se reproduce el estado real borrando la fila.
+    await rows(
+      db.drizzle,
+      sql`DELETE FROM pass_instance WHERE membership_id = ${membershipId} AND platform = 'apple'`,
+    );
+
+    expect((await register()).statusCode).toBe(201);
+
+    const creada = await rows<{ state: string }>(
+      db.drizzle,
+      sql`SELECT state FROM pass_instance
+          WHERE membership_id = ${membershipId} AND platform = 'apple'`,
+    );
+    expect(creada).toHaveLength(1);
+    expect(creada[0]?.state).toBe("active");
+  });
+
+  it("tras registrar sin fila previa, el dispositivo ya ve el pase en la lista", async () => {
+    // La prueba de que el arreglo cierra el agujero: sin la fila, este GET
+    // devolvía 204 (nada cambió) para siempre.
+    await rows(
+      db.drizzle,
+      sql`DELETE FROM pass_instance WHERE membership_id = ${membershipId} AND platform = 'apple'`,
+    );
+    await register();
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/apple/v1/devices/dev-1/registrations/${PASS_TYPE}`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().serialNumbers).toEqual([SERIAL]);
+  });
+
   it("actualiza el push token cuando el dispositivo re-registra", async () => {
     await register(SERIAL, "dev-1", "push-viejo");
     await register(SERIAL, "dev-1", "push-nuevo");

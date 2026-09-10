@@ -218,3 +218,38 @@ export async function pushPassUpdate(
 
   return summary;
 }
+
+/**
+ * Entrega un aviso visible a la tarjeta de Apple.
+ *
+ * Apple no recibe texto: el aviso viaja como el valor nuevo del campo de
+ * novedades del pase, que lleva `changeMessage`. Así que el texto se **guarda**
+ * en el pase, se avanza `content_updated_at` para que el teléfono note que hay
+ * una versión nueva, y se le manda el push que lo hace volver a pedirla. Al
+ * bajar el pase, iOS ve el campo distinto y muestra la novedad.
+ *
+ * Devuelve `"no_target"` si la tarjeta no tiene pase de Apple instalado: no es un
+ * fallo de envío, es que no hay dónde entregar. El push es lo mejor que se puede
+ * hacer, pero no es condición: guardada la novedad, el teléfono la ve igual la
+ * próxima vez que sincronice por su cuenta.
+ */
+export async function deliverAppleMessage(
+  db: Db,
+  membershipId: string,
+  body: string,
+  client: ApnsClient,
+  encryptionKey: Buffer,
+  wwdrCertificatePem: string,
+): Promise<"sent" | "no_target"> {
+  const updated = await rows<{ id: string }>(
+    db.drizzle,
+    sql`UPDATE pass_instance
+        SET news = ${body}, content_updated_at = now()
+        WHERE membership_id = ${membershipId} AND platform = 'apple' AND state = 'active'
+        RETURNING id`,
+  );
+  if (updated.length === 0) return "no_target";
+
+  await pushPassUpdate(db, membershipId, client, encryptionKey, wwdrCertificatePem);
+  return "sent";
+}

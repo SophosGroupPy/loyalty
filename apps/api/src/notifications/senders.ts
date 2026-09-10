@@ -6,26 +6,63 @@
  */
 
 import type { PassService } from "../passes.js";
-import type { NotificationSender, RenderedNotification } from "./dispatcher.js";
+import {
+  NoInstalledPassError,
+  type NotificationSender,
+  type RenderedNotification,
+} from "./dispatcher.js";
 
 /**
- * Wallet. Manda el aviso como mensaje del pase.
- *
- * Se usa `addMessage` y no el disparo por cambio de saldo porque sirve para
- * cualquier tipo de aviso —campañas, niveles, beneficios— y porque no depende de
- * `notifyPreference`, cuyo valor la documentación de Google define de dos formas
- * distintas. Ver docs/google-wallet-verificacion.md.
+ * Entrega un aviso a la tarjeta de Apple. La implementa `apns.ts`; se recibe como
+ * dependencia para que este módulo no dependa de la capa de push.
  */
-export function createWalletSender(passes: PassService): NotificationSender {
+export interface AppleMessageDeliverer {
+  /** `"no_target"` si la tarjeta no tiene pase de Apple instalado. */
+  deliver(membershipId: string, body: string): Promise<"sent" | "no_target">;
+}
+
+/**
+ * Wallet. Entrega el aviso a las dos plataformas que la tarjeta tenga.
+ *
+ * Cada wallet tiene su vía: Google recibe `addMessage`; Apple no recibe texto, así
+ * que el aviso viaja como el valor nuevo del campo de novedades del pase (con
+ * `changeMessage`) más un push que hace al teléfono volver a pedirlo. Una tarjeta
+ * puede estar en una wallet, en la otra o en las dos, así que se intenta cada una
+ * y alcanza con que **una** entregue. Si ninguna tiene pase instalado, se lanza
+ * `NoInstalledPassError`: no es un fallo de envío, es que no hay destino.
+ */
+export function createWalletSender(
+  passes: PassService,
+  apple?: AppleMessageDeliverer,
+): NotificationSender {
   return {
     async send(notification: RenderedNotification) {
-      await passes.sendMessage(notification.membershipId, {
+      let entregado = false;
+
+      // Google: `addMessage` si la tarjeta tiene pase de Google. Devuelve
+      // `"no_pass"` sin tirar cuando no lo tiene; tira solo ante un fallo real de
+      // transporte, que corta acá y marca el envío como fallido.
+      const google = await passes.sendMessage(notification.membershipId, {
         // El id del aviso alcanza como id de mensaje: es único y permite rastrear
         // en la tarjeta cuál de los envíos registrados lo produjo.
         id: notification.id,
         header: notification.header,
         body: notification.body,
       });
+      if (google === "sent") entregado = true;
+
+      // Apple: el aviso es el valor del campo de novedades. En la pantalla el
+      // cliente ve ese valor, así que se antepone el título para no perder el
+      // gancho ("Miércoles de 2x1: Traé un amigo…").
+      if (apple) {
+        const texto = notification.header
+          ? `${notification.header}: ${notification.body}`
+          : notification.body;
+        const resultado = await apple.deliver(notification.membershipId, texto);
+        if (resultado === "sent") entregado = true;
+      }
+
+      if (!entregado) throw new NoInstalledPassError();
     },
   };
 }

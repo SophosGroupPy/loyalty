@@ -67,6 +67,10 @@ export const passInstance = pgTable("pass_instance", {
   lastSyncedBalance: integer("last_synced_balance"),
   lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
   lastError: text("last_error"),
+  // Última novedad mostrada en el pase de Apple. Su cambio de valor es lo que
+  // dispara el aviso visible en iPhone (el campo de novedades lleva
+  // `changeMessage`). Ver `migrations/0013_pass_news.sql`.
+  news: text("news"),
   contentUpdatedAt: timestamp("content_updated_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

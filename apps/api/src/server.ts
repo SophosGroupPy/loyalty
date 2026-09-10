@@ -38,7 +38,12 @@ import {
   merchantForProvisioning,
   provisionPassCertificate,
 } from "./provisioning.js";
-import { createApnsClient, pushPassUpdate, type ApnsClient } from "./apns.js";
+import {
+  createApnsClient,
+  deliverAppleMessage,
+  pushPassUpdate,
+  type ApnsClient,
+} from "./apns.js";
 import { createRateLimiter } from "./rate-limit.js";
 import { createScheduler } from "./scheduler.js";
 import { AscError, passTypeIdFor } from "@sophos/passes";
@@ -328,12 +333,26 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
   });
 
+  // Canal de Apple para los avisos visibles: guarda la novedad en el pase y
+  // empuja el push. Solo se arma si hay con qué firmar y empujar; si no, el
+  // sender entrega solo por Google y el resto queda como "sin pase instalado".
+  const wwdrPem = opts.appleWallet?.wwdrCertificatePem;
+  const appleDeliverer =
+    apns && encryptionKey && wwdrPem
+      ? {
+          deliver: (membershipId: string, body: string) =>
+            deliverAppleMessage(db, membershipId, body, apns, encryptionKey, wwdrPem),
+        }
+      : undefined;
+
   // Sin credenciales de wallet el despachador sigue funcionando entero contra la
   // consola: se puede verificar cupo, prioridad y agrupamiento sin depender de
   // que exista el Issuer.
   const sender =
     opts.notificationSender ??
-    (passes.enabled ? createWalletSender(passes) : createConsoleSender());
+    (passes.enabled || appleDeliverer
+      ? createWalletSender(passes, appleDeliverer)
+      : createConsoleSender());
 
   // Sin proveedor de WhatsApp o SMS el código se imprime por consola: permite
   // recorrer el alta entera antes de contratar uno.
@@ -3144,14 +3163,23 @@ export function createServer(opts: ServerOptions): FastifyInstance {
       delivered: number;
       pending: number;
       suppressed: number;
+      no_installed_pass: number;
     }>(
       db.drizzle,
+      // "Sin pase instalado" se separa del resto de los suprimidos: no es un
+      // fallo de envío ni un tope, es que la persona no agregó la tarjeta a
+      // ninguna wallet. Mezclarlo con `suppressed` le haría creer al comercio que
+      // el envío falló cuando en realidad no había a dónde llegar.
       sql`SELECT c.id, c.header, c.body, c.created_at,
                  count(n.id)::int AS targeted,
                  count(n.id) FILTER (WHERE n.sent_at IS NOT NULL)::int AS delivered,
                  count(n.id) FILTER (
                    WHERE n.sent_at IS NULL AND n.suppressed_reason IS NULL)::int AS pending,
-                 count(n.id) FILTER (WHERE n.suppressed_reason IS NOT NULL)::int AS suppressed
+                 count(n.id) FILTER (
+                   WHERE n.suppressed_reason = 'no_installed_pass')::int AS no_installed_pass,
+                 count(n.id) FILTER (
+                   WHERE n.suppressed_reason IS NOT NULL
+                     AND n.suppressed_reason <> 'no_installed_pass')::int AS suppressed
           FROM campaign c
           LEFT JOIN notification n ON n.campaign_id = c.id
           WHERE c.merchant_id = ${merchant.id}

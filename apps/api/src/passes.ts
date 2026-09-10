@@ -57,11 +57,17 @@ export interface PassService {
    * cuando lo único que cambió fue el diseño.
    */
   refreshGoogleClass(merchantId: string): Promise<{ status: "updated" | "skipped"; reason?: string }>;
-  /** Manda un mensaje visible al pase. Es la vía de las notificaciones. */
+  /**
+   * Manda un mensaje visible al pase de Google, si la tarjeta lo tiene.
+   *
+   * Devuelve `"no_pass"` cuando no hay pase de Google emitido —o Google no está
+   * configurado—: no es un error, la tarjeta puede tener el aviso por Apple. Tira
+   * solo ante un fallo real de transporte contra Google.
+   */
   sendMessage(
     membershipId: string,
     message: { id: string; header: string; body: string },
-  ): Promise<void>;
+  ): Promise<"sent" | "no_pass">;
   /** Con `productId`, se limita a los pases de ese producto. */
   pendingSync(
     limit?: number,
@@ -350,7 +356,9 @@ export function createPassService(
      * define de forma contradictoria.
      */
     async sendMessage(membershipId, message) {
-      if (!client) throw new Error("Google Wallet no está configurado.");
+      // Sin Google configurado no hay canal Google, pero la tarjeta puede tener
+      // el aviso por Apple: se informa en vez de tirar.
+      if (!client) return "no_pass";
 
       const pass = await rows<{ external_id: string }>(
         db.drizzle,
@@ -358,9 +366,10 @@ export function createPassService(
             WHERE membership_id = ${membershipId} AND platform = 'google' AND state = 'active'`,
       );
       const instance = pass[0];
-      if (!instance) throw new Error("La tarjeta no tiene pase de Google emitido.");
+      if (!instance) return "no_pass";
 
       await client.addMessage(instance.external_id, { ...message, notify: true });
+      return "sent";
     },
 
     /**

@@ -366,6 +366,32 @@ describe("emisión del pase", () => {
     expect(pass.storeCard.headerFields[0].value).toBe("Oro");
   });
 
+  it("muestra la última novedad guardada, para que iOS dispare el aviso visible", async () => {
+    // Apple no recibe texto: el aviso viaja como el valor del campo de novedades,
+    // que lleva `changeMessage: "%@"`. Cuando el despachador entrega una campaña,
+    // guarda el texto en `pass_instance.news`; el pase servido tiene que mostrarlo
+    // o el aviso nunca aparece.
+    await cargarCertificado();
+    await rows(
+      db.drizzle,
+      sql`INSERT INTO pass_instance (membership_id, merchant_id, platform, external_id, state, news)
+          SELECT id, merchant_id, 'apple', serial_number, 'active',
+                 'Miércoles de 2x1: Traé un amigo'
+          FROM membership WHERE serial_number = ${SERIAL}`,
+    );
+
+    const res = await pedirPase();
+    expect(res.statusCode).toBe(200);
+
+    const pass = JSON.parse(extraer(res, "pass.json").toString("utf8"));
+    const novedades = pass.storeCard.backFields.find(
+      (f: { key: string }) => f.key === "novedades",
+    );
+    expect(novedades.value).toBe("Miércoles de 2x1: Traé un amigo");
+    // El '%@' es lo que hace que iOS muestre el valor nuevo como aviso en pantalla.
+    expect(novedades.changeMessage).toBe("%@");
+  });
+
   it("el authenticationToken del pase emitido es el que valida el web service", async () => {
     // Si no coincidieran, el pase se agregaría y el registro fallaría con 401:
     // la tarjeta quedaría para siempre sin actualizarse.
