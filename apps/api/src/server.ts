@@ -2278,6 +2278,7 @@ export function createServer(opts: ServerOptions): FastifyInstance {
           programName: merchant.design?.programName ?? merchant.display_name,
           logoUrl: merchant.design?.logoUrl ?? null,
           backgroundColor: merchant.design?.backgroundColor ?? "#1F2937",
+          foregroundColor: merchant.design?.foregroundColor ?? null,
           unit: merchant.program_kind === "stamps" ? "stamps" : "points",
         }),
       );

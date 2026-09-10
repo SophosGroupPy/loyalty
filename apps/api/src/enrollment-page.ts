@@ -20,6 +20,8 @@ export interface EnrollmentBranding {
   programName: string;
   logoUrl: string | null;
   backgroundColor: string;
+  /** Color del texto de la tarjeta; sirve de acento cuando el fondo es claro. */
+  foregroundColor?: string | null;
   unit: "points" | "stamps";
 }
 
@@ -33,20 +35,39 @@ function esc(t: string): string {
   );
 }
 
-/**
- * Contraste sobre el color de marca: decide si el texto del botón va blanco o
- * negro, con luminancia relativa (el ojo pesa el verde mucho más que el azul).
- */
-function textoSobre(hex: string): string {
-  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
-  if (!m) return "#ffffff";
+/** Luminancia relativa (el ojo pesa el verde mucho más que el azul). */
+function lum(hex: string): number {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return 1;
   const v = parseInt(m[1]!, 16);
   const [r, g, b] = [(v >> 16) & 255, (v >> 8) & 255, v & 255];
-  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.6 ? "#ffffff" : "#111111";
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+}
+
+/** Texto (blanco/negro) que contrasta sobre `hex`. */
+function textoSobre(hex: string): string {
+  return lum(hex) < 0.6 ? "#ffffff" : "#111111";
+}
+
+/**
+ * Color de acento del landing (cabecera + botones), garantizado legible sobre el
+ * fondo BLANCO de la página.
+ *
+ * El color de fondo de la tarjeta no sirve tal cual: muchos comercios lo dejan en
+ * blanco, y un acento blanco sobre página blanca deja botones invisibles. Se elige
+ * el color de marca más oscuro que contraste de verdad —fondo o texto de la
+ * tarjeta— y, si ninguno sirve, un neutro oscuro.
+ */
+function acento(bg?: string | null, fg?: string | null): string {
+  const usables = [bg, fg]
+    .filter((c): c is string => !!c && HEX.test(c))
+    .filter((c) => lum(c) < 0.7)
+    .sort((a, b) => lum(a) - lum(b));
+  return usables[0] ?? "#1F2937";
 }
 
 export function enrollmentPage(b: EnrollmentBranding): string {
-  const marca = HEX.test(b.backgroundColor) ? b.backgroundColor : "#1F2937";
+  const marca = acento(b.backgroundColor, b.foregroundColor);
   const sobreMarca = textoSobre(marca);
   const unidad = b.unit === "stamps" ? "sellos" : "puntos";
 
