@@ -73,4 +73,30 @@ describe("sender de wallet", () => {
     // que marcarlo como send_failed, no como "sin pase instalado".
     await expect(sender.send(aviso)).rejects.toThrow("google caído");
   });
+
+  it("entrega por Apple aunque el pase de Google esté roto (404)", async () => {
+    // El caso real: la tarjeta tiene pase en las dos wallets, el objeto de Google
+    // quedó 404, y Apple sí está instalado. El fallo de Google NO puede impedir
+    // que Apple entregue.
+    const apple: AppleMessageDeliverer = { async deliver() { return "sent"; } };
+    const sender = createWalletSender(
+      fakePasses(async () => {
+        throw new Error("Google 404: Wallet Object not found");
+      }),
+      apple,
+    );
+    await expect(sender.send(aviso)).resolves.toBeUndefined();
+  });
+
+  it("si Google falla y Apple no tiene pase, es send_failed (propaga), no NoInstalledPass", async () => {
+    const apple: AppleMessageDeliverer = { async deliver() { return "no_target"; } };
+    const sender = createWalletSender(
+      fakePasses(async () => {
+        throw new Error("Google 404");
+      }),
+      apple,
+    );
+    // Hubo un destino (Google) y su transporte falló: send_failed, con el error.
+    await expect(sender.send(aviso)).rejects.toThrow("Google 404");
+  });
 });

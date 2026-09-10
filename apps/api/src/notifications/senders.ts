@@ -38,31 +38,51 @@ export function createWalletSender(
   return {
     async send(notification: RenderedNotification) {
       let entregado = false;
+      // Un fallo REAL de transporte en una wallet no puede tumbar a la otra. Pasa
+      // seguido: una tarjeta tiene pase en las dos, el objeto de Google quedó 404
+      // (nunca se guardó de verdad) y Apple sí está instalado. Si el error de
+      // Google cortara acá, Apple —que sí podía entregar— nunca se intentaría. Se
+      // guarda el último error y solo se propaga si NINGUNA wallet entregó.
+      let fallo: unknown = null;
 
       // Google: `addMessage` si la tarjeta tiene pase de Google. Devuelve
-      // `"no_pass"` sin tirar cuando no lo tiene; tira solo ante un fallo real de
-      // transporte, que corta acá y marca el envío como fallido.
-      const google = await passes.sendMessage(notification.membershipId, {
-        // El id del aviso alcanza como id de mensaje: es único y permite rastrear
-        // en la tarjeta cuál de los envíos registrados lo produjo.
-        id: notification.id,
-        header: notification.header,
-        body: notification.body,
-      });
-      if (google === "sent") entregado = true;
+      // `"no_pass"` sin tirar cuando no lo tiene; tira ante un fallo real de
+      // transporte.
+      try {
+        const google = await passes.sendMessage(notification.membershipId, {
+          // El id del aviso alcanza como id de mensaje: es único y permite
+          // rastrear en la tarjeta cuál de los envíos registrados lo produjo.
+          id: notification.id,
+          header: notification.header,
+          body: notification.body,
+        });
+        if (google === "sent") entregado = true;
+      } catch (error) {
+        fallo = error;
+      }
 
       // Apple: el aviso es el valor del campo de novedades. En la pantalla el
       // cliente ve ese valor, así que se antepone el título para no perder el
-      // gancho ("Miércoles de 2x1: Traé un amigo…").
+      // gancho ("Miércoles de 2x1: Traé un amigo…"). Se intenta SIEMPRE, aunque
+      // Google haya fallado.
       if (apple) {
-        const texto = notification.header
-          ? `${notification.header}: ${notification.body}`
-          : notification.body;
-        const resultado = await apple.deliver(notification.membershipId, texto);
-        if (resultado === "sent") entregado = true;
+        try {
+          const texto = notification.header
+            ? `${notification.header}: ${notification.body}`
+            : notification.body;
+          const resultado = await apple.deliver(notification.membershipId, texto);
+          if (resultado === "sent") entregado = true;
+        } catch (error) {
+          fallo = error;
+        }
       }
 
-      if (!entregado) throw new NoInstalledPassError();
+      if (entregado) return;
+      // Hubo un destino pero el transporte falló: es un envío fallido de verdad,
+      // no un "sin pase instalado".
+      if (fallo) throw fallo;
+      // Ninguna wallet tenía pase: no hay dónde entregar.
+      throw new NoInstalledPassError();
     },
   };
 }
