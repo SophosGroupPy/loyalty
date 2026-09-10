@@ -415,4 +415,49 @@ describe("resiliencia ante una caída de Google", () => {
     expect(event.statusCode).toBe(201);
     expect(event.json().balance).toBe(5);
   });
+
+  it("cura un pase de Google cuyo objeto no existe: lo crea y reintenta", async () => {
+    // El caso real: la persona nunca guardó la tarjeta de Google, así que el
+    // objeto no existe y `addMessage` da 404 contra un objeto inexistente. En vez
+    // de fallar, el servicio crea el objeto y reintenta una sola vez.
+    let addMessageIntentos = 0;
+    let creoObjeto = false;
+    const impl = (async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      if (href.includes("oauth2.googleapis.com")) {
+        return new Response(JSON.stringify({ access_token: "t", expires_in: 3600 }), {
+          status: 200,
+        });
+      }
+      const method = init?.method ?? "GET";
+      if (href.endsWith("/addMessage")) {
+        addMessageIntentos++;
+        if (addMessageIntentos === 1) {
+          return new Response(
+            JSON.stringify({ error: { code: 404, message: "Wallet Object not found" } }),
+            { status: 404 },
+          );
+        }
+      } else if (method === "POST" && /\/loyaltyObject$/.test(href)) {
+        creoObjeto = true;
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await boot({ googleWallet: walletConfig, fetchImpl: impl });
+    const membershipId = await seedCard();
+    await call("POST", "/v1/passes", { merchant: "r-1", membership: { id: membershipId } });
+
+    // Solo nos importa lo que haga el auto-curado, no la creación al emitir.
+    creoObjeto = false;
+
+    const service = createPassService(db, walletConfig, impl);
+    await expect(
+      service.sendMessage(membershipId, { id: "n1", header: "Hola", body: "Bienvenido" }),
+    ).resolves.toBe("sent");
+
+    // Falló con 404, se creó el objeto, y el reintento entregó.
+    expect(addMessageIntentos).toBe(2);
+    expect(creoObjeto).toBe(true);
+  });
 });

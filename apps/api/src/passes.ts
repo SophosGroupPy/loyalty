@@ -17,12 +17,19 @@ import {
   buildLoyaltyObject,
   buildSaveLink,
   createGoogleWalletClient,
+  GoogleWalletError,
   objectIdFor,
   type CardDesign,
+  type GoogleLoyaltyObject,
   type GoogleWalletClient,
   type GoogleWalletConfig,
   type PassLocation,
 } from "@sophos/passes";
+
+/** Un error de Google que significa "el objeto no existe": hay que crearlo. */
+function esObjetoInexistente(error: unknown): boolean {
+  return error instanceof GoogleWalletError && error.status === 404;
+}
 
 /** Diseño por defecto, para que un comercio recién dado de alta ya pueda emitir. */
 export const DEFAULT_DESIGN: CardDesign = {
@@ -171,6 +178,28 @@ export function createPassService(
     };
   }
 
+  /**
+   * Arma el objeto de Google de una tarjeta.
+   *
+   * Se usa para crearlo al emitir y para reconstruirlo cuando hay que curar un
+   * pase cuyo objeto no existe (404). Solo se llama con `config` presente —dentro
+   * de las ramas que ya chequean `client`—, así que el `!` es seguro.
+   */
+  function objectFor(card: CardRow): GoogleLoyaltyObject {
+    const design = designOf(card);
+    return buildLoyaltyObject({
+      issuerId: config!.issuerId,
+      merchantSlug: card.merchant_slug,
+      serialNumber: card.serial_number,
+      accountName: card.holder_name,
+      balance: card.balance,
+      balanceLabel: design.balanceLabel,
+      attribution: design.attribution,
+      tier: card.tier,
+      memberSince: new Date(card.issued_at).toISOString(),
+    });
+  }
+
   return {
     enabled: Boolean(config),
 
@@ -204,27 +233,23 @@ export function createPassService(
         locations: await loadLocations(merchantId),
       });
 
-      const object = buildLoyaltyObject({
-        issuerId: config.issuerId,
-        merchantSlug: card.merchant_slug,
-        serialNumber: card.serial_number,
-        accountName: card.holder_name,
-        balance: card.balance,
-        balanceLabel: design.balanceLabel,
-        attribution: design.attribution,
-        tier: card.tier,
-        memberSince: new Date(card.issued_at).toISOString(),
-      });
+      const object = objectFor(card);
 
-      // La clase se registra por API además de viajar en el link: el link basta
-      // para el primer guardado, pero las actualizaciones de saldo necesitan que
-      // la clase exista del lado de Google.
+      // La clase Y el objeto se registran por API además de viajar en el link.
+      //
+      // Antes solo se registraba la clase y el objeto viajaba únicamente en el
+      // link: si la persona no llegaba a guardar la tarjeta (o guardaba solo la de
+      // Apple), el objeto nunca se creaba, y después `addMessage`/`syncBalance`
+      // fallaban con 404 contra un objeto inexistente. Crearlo acá lo vuelve un
+      // recurso que existe desde la emisión; guardar el link solo lo agrega a la
+      // wallet de la persona.
       let classRegistered = true;
       let classError: string | undefined;
 
       if (client) {
         try {
           await client.upsertClass(loyaltyClass);
+          await client.upsertObject(object);
         } catch (error) {
           // Que falle el registro no impide entregar el link —el pase viaja
           // completo adentro—, pero sí se informa: una tarjeta que nunca va a
@@ -283,15 +308,26 @@ export function createPassService(
         return { status: "skipped", reason: "already_current" };
       }
 
+      const saldo = {
+        objectId: instance.external_id,
+        balance: card.balance,
+        balanceLabel: designOf(card).balanceLabel,
+        // Silencioso salvo que se pida lo contrario: quién recibe un aviso y
+        // cuándo lo decide el despachador, que es el único que ve el cupo.
+        notify: options.notify ?? false,
+      };
+
       try {
-        await client.syncBalance({
-          objectId: instance.external_id,
-          balance: card.balance,
-          balanceLabel: designOf(card).balanceLabel,
-          // Silencioso salvo que se pida lo contrario: quién recibe un aviso y
-          // cuándo lo decide el despachador, que es el único que ve el cupo.
-          notify: options.notify ?? false,
-        });
+        try {
+          await client.syncBalance(saldo);
+        } catch (error) {
+          // El objeto no existe (la persona nunca guardó la tarjeta, o se perdió
+          // del lado de Google). Se crea y se reintenta una sola vez, así el pase
+          // se cura solo en lugar de quedar desincronizado para siempre.
+          if (!esObjetoInexistente(error)) throw error;
+          await client.upsertObject(objectFor(card));
+          await client.syncBalance(saldo);
+        }
 
         await rows(
           db.drizzle,
@@ -368,7 +404,18 @@ export function createPassService(
       const instance = pass[0];
       if (!instance) return "no_pass";
 
-      await client.addMessage(instance.external_id, { ...message, notify: true });
+      const mensaje = { ...message, notify: true };
+      try {
+        await client.addMessage(instance.external_id, mensaje);
+      } catch (error) {
+        // El objeto no existe (la persona nunca guardó la tarjeta de Google, o se
+        // perdió). Se crea desde los datos de la tarjeta y se reintenta una vez.
+        if (!esObjetoInexistente(error)) throw error;
+        const card = await loadCard(membershipId);
+        if (!card) throw error;
+        await client.upsertObject(objectFor(card));
+        await client.addMessage(instance.external_id, mensaje);
+      }
       return "sent";
     },
 
