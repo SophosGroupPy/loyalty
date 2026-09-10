@@ -509,6 +509,122 @@ export async function auditAllBalances(
   }));
 }
 
+export interface ReverseRedemptionInput {
+  merchantId: string;
+  /** Uno de los dos: el canje puntual, o el pedido contra el que se usó. */
+  redemptionId?: string;
+  externalOrderId?: string;
+  /** Queda como actor del asiento que devuelve los puntos. */
+  reversedBy: string;
+}
+
+export type ReverseRedemptionOutput =
+  | {
+      status: "reversed";
+      membershipId: string;
+      ledgerEntryId: string;
+      /** Cuántos puntos volvieron al saldo. Siempre el costo completo. */
+      restored: number;
+      balance: number;
+      tier: string | null;
+    }
+  /** Ya se había revertido. No se devuelve dos veces. */
+  | { status: "already_reversed"; membershipId: string; balance: number }
+  | { status: "not_found" };
+
+/**
+ * Devuelve los puntos de un canje.
+ *
+ * A diferencia de la reversa de un consumo —donde lo acumulado puede haberse
+ * gastado y no siempre se recupera todo—, acá siempre se restituye el costo
+ * completo: devolver puntos nunca puede fallar por saldo.
+ *
+ * El canje no se borra ni se edita: queda en el historial con su fecha de
+ * reversa, y los puntos vuelven con un asiento nuevo. Un canje que desaparece es
+ * un canje que nadie puede auditar.
+ */
+export async function reverseRedemption(
+  db: Db,
+  input: ReverseRedemptionInput,
+): Promise<ReverseRedemptionOutput> {
+  return db.drizzle.transaction(async (tx): Promise<ReverseRedemptionOutput> => {
+    const encontrados = await rows<{
+      id: string;
+      membership_id: string;
+      reversed_at: string | null;
+      cost: number;
+      name: string;
+    }>(
+      tx,
+      input.redemptionId
+        ? sql`SELECT rd.id, rd.membership_id, rd.reversed_at, r.cost, r.name
+              FROM redemption rd
+              JOIN reward r ON r.id = rd.reward_id
+              WHERE rd.id = ${input.redemptionId} AND rd.merchant_id = ${input.merchantId}
+              FOR UPDATE OF rd`
+        : sql`SELECT rd.id, rd.membership_id, rd.reversed_at, r.cost, r.name
+              FROM redemption rd
+              JOIN reward r ON r.id = rd.reward_id
+              WHERE rd.external_order_id = ${input.externalOrderId}
+                AND rd.merchant_id = ${input.merchantId}
+                AND rd.reversed_at IS NULL
+              ORDER BY rd.redeemed_at DESC
+              LIMIT 1
+              FOR UPDATE OF rd`,
+    );
+
+    const canje = encontrados[0];
+    if (!canje) return { status: "not_found" };
+
+    const membership = await lockMembership(tx, canje.membership_id, input.merchantId);
+    if (!membership) return { status: "not_found" };
+
+    if (canje.reversed_at) {
+      return {
+        status: "already_reversed",
+        membershipId: canje.membership_id,
+        balance: membership.balance,
+      };
+    }
+
+    const config = membership.config;
+    const day = businessDay(new Date(), config.timezone ?? DEFAULT_TIMEZONE, config.dayBoundaryHour ?? 0);
+    const balanceAfter = membership.balance + canje.cost;
+
+    const entry = await rows<{ id: string }>(
+      tx,
+      sql`INSERT INTO ledger_entry
+            (membership_id, merchant_id, kind, amount, balance_after,
+             business_day, reason, actor)
+          VALUES (${membership.id}, ${membership.merchant_id}, 'adjust',
+                  ${canje.cost}, ${balanceAfter}, ${day},
+                  ${`reversa de canje: ${canje.name}`}, ${input.reversedBy})
+          RETURNING id`,
+    );
+    const ledgerEntryId = entry[0]?.id;
+    if (!ledgerEntryId) throw new Error("no se pudo registrar la reversa del canje");
+
+    await rows(tx, sql`UPDATE redemption SET reversed_at = now() WHERE id = ${canje.id}`);
+
+    const tier = tierFor(config, balanceAfter);
+    await rows(
+      tx,
+      sql`UPDATE membership
+          SET balance = ${balanceAfter}, tier = ${tier?.name ?? null}
+          WHERE id = ${membership.id}`,
+    );
+
+    return {
+      status: "reversed",
+      membershipId: membership.id,
+      ledgerEntryId,
+      restored: canje.cost,
+      balance: balanceAfter,
+      tier: tier?.name ?? null,
+    };
+  });
+}
+
 export interface ReverseEventInput {
   productId: string;
   merchantId: string;

@@ -448,6 +448,63 @@ describe("identidad compartida con programas separados", () => {
     expect(res.json().required).toBe(10);
   });
 
+  it("devuelve los puntos al deshacer un canje, y una sola vez", async () => {
+    const elmenu = await tokenFor("elmenu");
+    await setupMerchant(elmenu, "r-1", "don-julio");
+    const card = await enroll(elmenu, "r-1", "0993427654");
+
+    const reward = await call(elmenu, "POST", "/v1/rewards", {
+      merchant: "r-1",
+      name: "Café gratis",
+      cost: 10,
+    });
+    await call(elmenu, "POST", "/v1/events", {
+      merchant: "r-1",
+      idempotencyKey: "order-1",
+      type: "order.paid",
+      amount: 150_000,
+      membership: { id: card.membershipId },
+    });
+
+    const canje = await call(elmenu, "POST", "/v1/redemptions", {
+      merchant: "r-1",
+      rewardId: reward.json().id,
+      membership: { id: card.membershipId },
+      redeemedBy: "staff:1",
+      orderId: "pedido-9",
+    });
+    expect(canje.statusCode, canje.body).toBe(201);
+    expect(canje.json().balance).toBe(5);
+
+    // Se deshace por el pedido, que es lo que tiene la caja cuando se anula una
+    // venta: no le hace falta haber guardado el id del canje.
+    const primera = await call(elmenu, "POST", "/v1/redemptions/reverse", {
+      merchant: "r-1",
+      orderId: "pedido-9",
+      reversedBy: "staff:1",
+    });
+    expect(primera.statusCode, primera.body).toBe(200);
+    expect(primera.json().status).toBe("reversed");
+    expect(primera.json().restored).toBe(10);
+    expect(primera.json().balance).toBe(15);
+
+    // Repetirlo no regala puntos de nuevo. Un reintento por mala señal es el
+    // caso normal, no el raro.
+    const segunda = await call(elmenu, "POST", "/v1/redemptions/reverse", {
+      merchant: "r-1",
+      orderId: "pedido-9",
+      reversedBy: "staff:1",
+    });
+    expect(segunda.statusCode).toBe(404);
+
+    // Y el saldo sigue cuadrando contra el ledger: la reversa es un asiento más,
+    // no una edición del que ya estaba.
+    expect(await auditBalance(db, card.membershipId)).toMatchObject({
+      stored: 15,
+      consistent: true,
+    });
+  });
+
   it("el alta es idempotente dentro del mismo comercio", async () => {
     const elmenu = await tokenFor("elmenu");
     await setupMerchant(elmenu, "r-1", "don-julio");

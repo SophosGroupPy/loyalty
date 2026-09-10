@@ -290,6 +290,8 @@ export const redemption = pgTable("redemption", {
   externalOrderId: text("external_order_id"),
   /** Cuánta plata representó, para poder cruzar canjes contra ventas. */
   discountAmount: integer("discount_amount"),
+  /** Cuándo se devolvieron los puntos. El canje sigue en el historial. */
+  reversedAt: timestamp("reversed_at", { withTimezone: true }),
   redeemedAt: timestamp("redeemed_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

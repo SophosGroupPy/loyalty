@@ -75,6 +75,7 @@ import {
   recomputeMemberTiers,
   redeem,
   reverseEvent,
+  reverseRedemption,
 } from "./ledger.js";
 import { enroll, lookup, normalizePhone } from "./memberships.js";
 import {
@@ -1192,6 +1193,54 @@ export function createServer(opts: ServerOptions): FastifyInstance {
     })().catch(() => {});
 
     return reply.code(201).send(result);
+  });
+
+  /**
+   * Deshace un canje y devuelve los puntos.
+   *
+   * Existe por dos motivos concretos: aplicar un beneficio al pedido son dos
+   * pasos —descontar los puntos y tocar la venta— y el segundo puede fallar; y un
+   * pedido ya cobrado puede anularse después. Sin esto, cualquiera de las dos
+   * cosas le deja al cliente un beneficio cobrado que nunca recibió.
+   *
+   * Idempotente: revertir dos veces no devuelve los puntos dos veces.
+   */
+  app.post("/v1/redemptions/reverse", async (request, reply) => {
+    const parsed = z
+      .object({
+        merchant: z.string().min(1),
+        redemptionId: z.string().min(1).optional(),
+        /** El pedido del que hay que sacar el canje, si no se tiene el id. */
+        orderId: z.string().min(1).max(120).optional(),
+        reversedBy: z.string().min(1),
+      })
+      .refine((b) => Boolean(b.redemptionId) !== Boolean(b.orderId), {
+        message: "Se requiere redemptionId u orderId, no los dos.",
+      })
+      .safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error.issues);
+
+    const merchant = await withMerchant(request, reply, parsed.data.merchant);
+    if (!merchant) return;
+
+    const result = await reverseRedemption(db, {
+      merchantId: merchant.id,
+      ...(parsed.data.redemptionId ? { redemptionId: parsed.data.redemptionId } : {}),
+      ...(parsed.data.orderId ? { externalOrderId: parsed.data.orderId } : {}),
+      reversedBy: parsed.data.reversedBy,
+    });
+
+    if (result.status === "not_found") {
+      return reply
+        .code(404)
+        .send({ error: "redemption_not_found", message: "No hay un canje vivo para deshacer." });
+    }
+
+    // Solo se toca el pase si el saldo cambió: una reversa repetida no tiene nada
+    // que empujar.
+    if (result.status === "reversed") syncPassInBackground(result.membershipId);
+
+    return reply.send(result);
   });
 
   // --------------------------------------------------------------------------
