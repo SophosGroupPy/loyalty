@@ -20,10 +20,15 @@ export const MAX_LOCATIONS = 10;
 /**
  * Radio por defecto de la geocerca, en metros.
  *
- * Apple usa el menor entre este valor y su propio default. 100 m cubre la
- * vereda del local sin dispararse con quien apenas pasa por la cuadra.
+ * Apple usa el menor entre este valor y su propio default.
+ *
+ * Estuvo en 100 m, que en la práctica era inútil: a esa distancia la tarjeta
+ * recién aparece cuando el cliente ya está en la puerta, o sea cuando ya
+ * decidió. 500 m la pone en la pantalla de bloqueo un par de cuadras antes,
+ * que es el momento en que todavía está eligiendo dónde comer — y es lo que
+ * hace que una geocerca sirva para algo.
  */
-export const DEFAULT_MAX_DISTANCE = 100;
+export const DEFAULT_MAX_DISTANCE = 500;
 
 /** Clave del campo reservado de novedades. Ver `newsFieldFor`. */
 export const NEWS_FIELD_KEY = "novedades";

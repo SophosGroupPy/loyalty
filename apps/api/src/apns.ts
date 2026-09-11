@@ -250,6 +250,34 @@ export async function deliverAppleMessage(
   );
   if (updated.length === 0) return "no_target";
 
-  await pushPassUpdate(db, membershipId, client, encryptionKey, wwdrCertificatePem);
+  // El resultado del push SE MIRA. Antes se descartaba, y eso volvía el sistema
+  // ciego justo donde más duele: la novedad quedaba guardada, el aviso se
+  // marcaba "entregado" y el comercio leía que había llegado, aunque no hubiera
+  // salido un solo push. Sin este rastro no hay forma de distinguir "Apple lo
+  // rechazó" de "el teléfono todavía no sincronizó".
+  //
+  // No cambia el resultado: la novedad YA está guardada en el pase y el teléfono
+  // la va a ver cuando sincronice, así que esto sigue siendo un envío. Lo que
+  // cambia es que ahora queda escrito qué pasó.
+  const push = await pushPassUpdate(db, membershipId, client, encryptionKey, wwdrCertificatePem);
+
+  const detalle =
+    push.sent > 0
+      ? null
+      : push.skipped
+        ? "sin material de firma para este Pass Type ID"
+        : push.dropped > 0
+          ? `${push.dropped} dispositivo(s) ya no tienen el pase`
+          : push.failed > 0
+            ? `Apple rechazó el push a ${push.failed} dispositivo(s)`
+            : "la tarjeta no tiene ningún dispositivo registrado";
+
+  await rows(
+    db.drizzle,
+    sql`UPDATE pass_instance
+        SET last_error = ${detalle}
+        WHERE membership_id = ${membershipId} AND platform = 'apple' AND state = 'active'`,
+  );
+
   return "sent";
 }
