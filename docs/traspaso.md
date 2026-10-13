@@ -1,11 +1,12 @@
 # Traspaso a desarrollo
 
-**Al 2026-09-01.**
+**Al 2026-10-13.** Escrito el 2026-09-01; actualizado con Google Wallet y Apple
+Wallet en producción.
 
 La arquitectura, las invariantes y el contrato de integración ya están escritos
 en este repo. Este documento es la capa que no está ahí: el estado de los
-trámites externos, las credenciales vivas, la especificación de Apple Wallet y
-el orden en que conviene atacar lo que queda.
+trámites externos, las credenciales vivas, las decisiones detrás de Apple
+Wallet, las trampas ya pagadas y el orden en que conviene atacar lo que queda.
 
 ---
 
@@ -16,11 +17,11 @@ orden:
 
 | Archivo | Qué contiene |
 |---|---|
-| [`README.md`](../README.md) | Arquitectura, las ocho invariantes que no se negocian, las decisiones de producto que no son evidentes desde el código y el listado completo de endpoints. **Es la fuente de verdad.** |
+| [`README.md`](../README.md) | Arquitectura, las ocho invariantes que no se negocian, las decisiones de producto que no son evidentes desde el código, el listado completo de endpoints y lo que falta para producción. **Es la fuente de verdad.** |
 | [`docs/integracion.md`](integracion.md) | Cómo se integra un producto: credenciales, eventos, consultas del POS, webhooks y verificación de firma. |
 | [`docs/google-wallet-verificacion.md`](google-wallet-verificacion.md) | Los valores que la documentación de Google define de forma contradictoria, y cuáles se verificaron contra la API real. |
 
-Suite al momento de escribir esto: **246 casos en 15 archivos**, todos pasando.
+Suite al momento de escribir esto: **446 casos en 26 archivos**, todos pasando.
 Las invariantes del README están cubiertas por tests — si alguna se rompe, la
 suite falla. Esa es la red de seguridad para tocar el motor de reglas o el
 ledger.
@@ -29,15 +30,14 @@ ledger.
 
 ## 1. Estado de los trámites externos
 
-Todo esto cambió después de que se escribieron los documentos del repo.
-
 | Frente | Estado | Detalle |
 |---|---|---|
-| Google Wallet API | **Aprobado** | Publishing access concedido el 2026-08-13. La cuenta salió de demo mode: cualquiera puede guardar una tarjeta y desaparece el prefijo `[TEST ONLY]`. |
+| Google Wallet | **En producción** | Publishing access concedido el 2026-08-13. La cuenta salió de demo mode: cualquiera puede guardar una tarjeta, sin el prefijo `[TEST ONLY]`, y ya se emiten tarjetas reales contra el Issuer. |
 | Apple Developer Program | **Activo** | Membresía de organización desde el 2026-09-01. App Store Connect habilitado. Vendedor: `SOPHOS GROUP E.A.S.` |
-| Entitlement NFC de Apple | **En revisión** | Solicitado el 2026-09-01. Dos semanas o más, aprobación discrecional. Se declararon **0 terminales con Apple VAS desplegados**, que es la verdad. |
+| Apple Wallet | **En producción** | Ciclo completo verificado el 2026-09-02 contra un iPhone real. El alta del Pass Type ID y el certificado de cada comercio es automática. Ver la sección 3. |
+| Entitlement NFC de Apple | **En revisión** | Solicitado el 2026-09-01. Aprobación discrecional. Se declararon **0 terminales con Apple VAS desplegados**, que es la verdad. |
 | Clase `don-julio` | **Publicada** | Era la clase de prueba de un restaurante ficticio. Al conceder el publishing access, Google publicó automáticamente toda clase en Active. Hoy figura `APPROVED`. |
-| Infraestructura | **Desplegado** | Fly.io, app `sophos-loyalty` en `gru` (São Paulo), 2 máquinas. https://sophos-loyalty.fly.dev |
+| Infraestructura | **Desplegado** | Fly.io, app `sophos-loyalty` en `gru` (São Paulo), 2 máquinas. Sirve en https://tarjeta.sophosgroup.com.py (y https://sophos-loyalty.fly.dev). |
 | Base de datos | **Neon** | Proyecto `sophos-loyalty` (id `soft-recipe-58331315`), base `loyalty`, región AWS `sa-east-1` (São Paulo) — la misma ciudad que la app. Cuenta de Sophos, no la personal. |
 
 ### `don-julio` está quemado
@@ -106,22 +106,27 @@ Enrollment ID          PQLR6DGS4Y
 El Team ID va en `teamIdentifier` de cada pase. No es secreto: viaja adentro del
 `.pkpass` y aparece en el `OU` del certificado.
 
-**Pass Type IDs registrados** — uno por comercio, ver la sección 3:
+**Pass Type IDs.** Uno por comercio, con la forma
+`pass.com.sophosgroup.l.<slug>` — ver la sección 3. Como el alta es automática,
+la lista viva no se mantiene acá: está en la pantalla de certificados del
+back-office, en `GET /admin/pass-certificates`, y
+`./scripts/provisionar-apple.sh` sin argumentos lista qué comercios pueden
+emitir en iPhone y cuáles no. El único que conviene recordar es el que **no**
+se puede usar: `pass.com.sophosgroup.l.don-julio`.
 
-| Comercio | Pass Type ID | Certificado vence |
-|---|---|---|
-| Don Julio (prueba) | `pass.com.sophosgroup.l.don-julio` | 2027-10-01 |
+Los certificados de Pass Type ID **vencen a los 13 meses** —el de Don Julio,
+emitido el 2026-09-01, vence el 2027-10-01—. Con un certificado por comercio,
+la renovación deja de ser un trámite anual y pasa a ser un calendario.
+`GET /admin/pass-certificates/expiring` los lista, pero **la renovación todavía
+no la dispara el scheduler**: hay que automatizarla antes de que venzan los
+primeros, o un día los pases de algún comercio dejan de poder actualizarse.
 
-Los certificados de Pass Type ID **vencen al año**. Con un certificado por
-comercio, la renovación deja de ser un trámite anual y pasa a ser un
-calendario: hay que automatizarla junto con el alta, o un día los pases de
-algún comercio dejan de poder actualizarse.
-
-**Material de firma.** Vive en `certs/<slug>/` y no va al repo — `certs/` está en
-`.gitignore` y la clave privada tiene permisos 600. En producción va al gestor
-de secretos, cifrada. Por comercio hacen falta tres archivos: `private.key`
-(generada localmente, nunca sale de ahí), `certificate.pem` (el que emite Apple
-a partir del CSR) y el intermedio compartido `certs/wwdr.pem`.
+**Material de firma.** Con el alta automática, la clave privada se genera en el
+servidor y no sale nunca de ahí: se guarda cifrada con AES-256-GCM en
+`pass_certificate`, y la clave de cifrado (`APPLE_PASS_ENCRYPTION_KEY`) vive en
+los secretos de Fly, nunca en la base. A Apple solo viaja el CSR. `certs/`
+quedó para el material manual de Don Julio y el intermedio `wwdr.pem`, que usa
+`scripts/emit-apple.ts`; está en `.gitignore` y en `.dockerignore`.
 
 ### Variables de entorno
 
@@ -131,15 +136,17 @@ El detalle completo está en el README. Las que importan en producción:
 |---|---|
 | `DATABASE_URL` | Sin ella la API levanta PGlite en memoria y pierde todo al reiniciar. El servicio aborta el arranque si `NODE_ENV=production` y falta. |
 | `JWT_SIGNING_KEY` | Tiene que ser estable. Si cambia, todos los productos integrados pierden sus tokens. |
-| `ADMIN_API_KEY` | Acceso administrativo. |
+| `ADMIN_API_KEY` | Acceso al back-office. Ve todo el ecosistema. |
 | `GOOGLE_WALLET_SA_PRIVATE_KEY` | PEM. Acepta los `\n` escapados tal como vienen en el JSON de GCP. |
+| `APPLE_PASS_ENCRYPTION_KEY` | Si se pierde, no se puede descifrar ninguna clave de firma y hay que pedirle a Apple certificados nuevos para todos los comercios. |
+| `APPLE_ASC_PRIVATE_KEY` | La `.p8` de la App Store Connect API, con rol Admin. Sin ella el alta de certificados vuelve a ser manual. |
 
 ---
 
-## 3. Apple Wallet — especificación de la fase 4
+## 3. Apple Wallet — fase 4
 
-Esta es la parte que no está escrita en ningún lado del repo. Son decisiones
-tomadas, no opciones a evaluar.
+Construida y en producción desde septiembre. Esta sección guarda las decisiones
+que le dan forma, para que no se vuelvan a discutir, y dónde vive cada pieza.
 
 ### Un Pass Type ID por comercio, no uno global
 
@@ -152,10 +159,9 @@ y restaurantes se le apilan juntas al cliente en una sola pila. El campo
 `groupingIdentifier`, que serviría para separarlas, **solo aplica a
 `eventTicket` y `boardingPass`** — no a las tarjetas de fidelidad.
 
-El alta es automatizable por la App Store Connect API con
-`POST /v1/passTypeIds`, así que dar de alta un comercio nuevo no tiene por qué
-ser un trámite manual. Cada Pass Type ID necesita además su propio certificado
-de firma.
+Cada Pass Type ID necesita además su propio certificado de firma. Las dos cosas
+se piden por la App Store Connect API, así que dar de alta un comercio nuevo no
+es un trámite manual.
 
 ### El branding va en el pase, no en un registro de Apple
 
@@ -163,13 +169,15 @@ Cada comercio lleva su propia marca en su tarjeta, y eso sale del `.pkpass`
 mismo:
 
 - `organizationName` — el nombre del comercio
-- `logoText` — el texto junto al logo
+- `logoText` — el texto junto al logo; por defecto, el nombre del comercio
 - `logo.png` — el logo del comercio, en @1x, @2x y @3x
+- `strip.png` — la foto de la banda: el plato, el salón
 - `backgroundColor`, `foregroundColor`, `labelColor`
 
 Se define al emitir, por comercio, y **no requiere ninguna aprobación de
 Apple**. Sophos aparece solo en la cadena del certificado, nunca en la cara del
-pase.
+pase. Bajo el código va "Powered by" y el producto dueño del comercio —elMenu,
+Noctu—, resuelto en cada emisión y no escrito a mano.
 
 > **Descartado, para que no se vuelva a plantear.** Apple Business Register no
 > es la palanca para esto. Registra la marca de la propia organización para
@@ -177,6 +185,15 @@ pase.
 > esa marca — o sea que Sophos no puede registrar las marcas de sus comercios.
 > Si un comercio quiere presencia verificada en Apple, la tramita él con su
 > propia organización.
+
+### Los sellos se dibujan dentro de la banda
+
+Apple no deja dibujar nada: el pase tiene ranuras fijas y una sola imagen
+ancha. Así que en un programa de sellos los casilleros se rinden **dentro de la
+banda**, generada de nuevo en cada descarga, con la foto del comercio de fondo y
+el ícono que el comercio sube dentro de cada sello. En Google no se puede: la
+imagen "hero" es por clase, no por tarjeta, así que ahí los sellos se muestran
+como número. Es un límite de la plataforma, no un pendiente.
 
 ### QR primero, NFC después
 
@@ -187,56 +204,58 @@ certificados para Apple Pay VAS, y un software de caja que soporte los modos
 
 En Paraguay el eslabón que no controlamos es el segundo: los comercios corren
 POS en Windows y los pagos van por pinpads del adquirente, y todavía no está
-identificado qué modelos son ni si soportan VAS. **No bloquear el v1 por esto.**
+identificado qué modelos son ni si soportan VAS. **No bloquear nada por esto.**
 
-### Lo que hay que construir
-
-- Generación y firma del `.pkpass` — el paquete, el manifiesto y la firma con
-  el certificado del Pass Type ID de ese comercio.
-- Web service de actualización con APNs, para que el saldo cambie en una
-  tarjeta ya guardada sin reemitirla. Es el equivalente de lo que ya funciona
-  en Google.
-- Alta automatizada de Pass Type IDs y certificados por comercio.
-- Reutilizar la cola de reconciliación existente: `GET /v1/passes/pending-sync`
-  ya resuelve el desfasaje cuando la wallet no responde, y la invariante 6 del
-  README aplica igual a Apple.
-
-### Lo que ya está construido de esta fase
-
-Al 2026-09-01, con la membresía de Apple activa, se construyó la mitad que no
-depende de tener certificados en la mano:
-
-- `packages/passes/src/apple/` — `pass.json`, manifiesto, firma PKCS#7 separada
-  y el zip del `.pkpass`. Los tests lo validan con el `unzip` y el `openssl` del
-  sistema, no con el mismo código que lo escribe.
-- `apps/api/src/apple.ts` y las rutas `/apple/v1/*` — registro de dispositivos,
-  baja, listado de pases con cambios y el log del dispositivo.
+### Dónde vive cada pieza
 
 Apple entró como un segundo emisor detrás de la misma interfaz que Google, no
 como una rama paralela: el diseño y la identidad del comercio se comparten.
 
-Después se completó la emisión y el aviso:
+| Pieza | Dónde |
+|---|---|
+| `pass.json`, manifiesto, firma PKCS#7 separada y zip del `.pkpass` | `packages/passes/src/apple/`. Los tests lo validan con el `unzip` y el `openssl` del sistema, no con el mismo código que lo escribe. |
+| Logos y banda reducidos a las medidas de Apple, sellos dibujados | `packages/passes/src/apple/resize.ts` y `stamps.ts` |
+| Cliente de la App Store Connect API (JWT ES256 con la `.p8`) | `packages/passes/src/apple/asc.ts` |
+| Web service: registro de dispositivos, pases con cambios, log | `apps/api/src/apple.ts`, rutas `/apple/v1/*` |
+| Emisión con el certificado del comercio | `apps/api/src/apple-pass.ts` |
+| Push de payload vacío que despierta al teléfono | `apps/api/src/apns.ts` |
+| Alta del material de firma | `apps/api/src/provisioning.ts` |
 
-- `apps/api/src/apple-pass.ts` — emite el `.pkpass` con el certificado del
-  comercio, guardado cifrado en `pass_certificate`. Verificado con el
-  certificado real de Don Julio y con el pase instalado en un iPhone.
-- `apps/api/src/apns.ts` — el push de payload vacío que despierta al teléfono.
+**La entrega al cliente.** El producto llama a `POST /v1/passes/apple` y recibe
+un link firmado a `/public/passes/:token`, que es lo que abre el teléfono. El
+token es la credencial —el cliente nunca creó una cuenta—, vive una hora por
+defecto y hasta una semana si el link viaja por correo. Si el comercio todavía
+no tiene certificado, responde 409 en vez de un link que reviente en la mano
+del cliente. La landing `/:slug` detecta iPhone o Android y ofrece el botón que
+corresponde.
 
-También se automatizó el alta del material de firma:
+**El alta del material de firma es un trabajo del scheduler**
+(`apple-provisioning`): le da Pass Type ID y certificado a todo comercio que no
+los tenga, así que activar el módulo alcanza. Va en el scheduler y no en el alta
+del comercio a propósito: si Apple está caído, dar de alta un comercio tiene que
+seguir funcionando. Como cada alta quema un identificador permanente, tiene dos
+frenos: un tope por tanda, y espera creciente de hasta seis horas ante un
+rechazo, con el motivo guardado. Se puede forzar con
+`POST /admin/merchants/:id/provision-pass` o con el script.
 
-- `packages/passes/src/apple/asc.ts` — cliente de la App Store Connect API,
-  autenticado con un JWT ES256 firmado con la clave `.p8` del equipo.
-- `apps/api/src/provisioning.ts` — genera el par de claves y el CSR, registra el
-  Pass Type ID, pide el certificado y lo guarda cifrado. Expuesto en
-  `POST /admin/merchants/:id/provision-pass`.
-
-Reemplaza seis pasos manuales en el portal por una llamada, y sirve igual para
-renovar: el Pass Type ID se reusa —cambiarlo dejaría huérfanos los pases ya
-emitidos— y solo se pide un certificado nuevo.
+Sirve igual para renovar: el Pass Type ID se reusa —cambiarlo dejaría huérfanos
+los pases ya emitidos— y solo se pide un certificado nuevo.
 
 El CSR se arma a mano en DER porque Node no lo trae y una librería de ASN.1 para
 veinte bytes es desproporcionada. Se valida con `openssl` en los tests, no con el
 mismo código que lo escribe.
+
+**Los avisos.** Apple no tiene un "mandar mensaje". La novedad se guarda en
+`pass_instance.news`, viaja en el `.pkpass` con `changeMessage`, y un push de
+APNs despierta al teléfono para que lo vuelva a bajar. El resultado del push
+queda en `pass_instance.last_error`: es lo que permite distinguir "Apple lo
+rechazó" de "el teléfono todavía no sincronizó". La fila de `pass_instance` de
+Apple se crea cuando el dispositivo se registra (migración 0013); sin ella el
+web service le contestaba al iPhone "nada cambió" y las tarjetas no se
+actualizaban solas.
+
+Cambiar el diseño o las geocercas también llega a los pases ya instalados: se
+marcan como cambiados y se empuja a cada dispositivo del comercio.
 
 ```
 App Store Connect API
@@ -273,23 +292,26 @@ el header ausente, APNs acepta el envío y el teléfono reacciona. Queda como es
 
 | Qué | Por qué no se pudo |
 |---|---|
-| La geocerca en iOS | Necesita estar cerca del local con el pase instalado |
+| La geocerca en iOS | Necesita estar cerca del local con el pase instalado. El radio pasó de 100 m a 500 m el 2026-09-11: a 100 m la tarjeta aparecía cuando el cliente ya estaba en la puerta. |
+| La geocerca en Android | Requiere un Android real cerca del local |
 | El tope de 3 notificaciones por pase cada 24 h de Google | Requiere un Android real y repetir envíos |
 
-### Tamaño de los logos
+### Tamaño de las imágenes
 
-**Resuelto.** El logo se reduce a las medidas de Apple al emitir el pase
-(`packages/passes/src/apple/resize.ts`). Con el mismo logo de 1024x1024, el
+**Resuelto.** El logo y la banda se reducen a las medidas de Apple al emitir el
+pase (`packages/passes/src/apple/resize.ts`). Con el mismo logo de 1024x1024, el
 `.pkpass` pasó de **337 KB a 12,8 KB**. Importa porque el pase se rebaja entero
 en cada cambio de saldo: ese peso es tráfico recurrente, no un costo único.
 
-Queda un tope de 512 KB al archivo que se **descarga**, que sigue teniendo
-sentido: no conviene bajar 10 MB para después achicarlos.
+Quedan topes al archivo que se **descarga** —512 KB para el logo, 5 MB para la
+foto de la banda, que de verdad pesa más—, porque no conviene bajar 10 MB para
+después achicarlos.
 
 **Lo que falta afinar.** Se redimensiona en cada emisión y no se cachea el
 resultado. Con muchos pases del mismo comercio es trabajo repetido; cuando
-moleste, lo natural es guardar las dos imágenes ya reducidas junto al diseño del
-comercio y regenerarlas solo cuando cambie el `logoUrl`.
+moleste, lo natural es guardar las imágenes ya reducidas junto al diseño del
+comercio y regenerarlas solo cuando cambie la URL de origen. La banda de sellos
+no entra en ese caché: depende del saldo de cada cliente.
 
 ---
 
@@ -298,27 +320,49 @@ comercio y regenerarlas solo cuando cambie el `logoUrl`.
 Cosas verificadas contra la API real que la documentación no dice, o dice mal.
 Están acá para que nadie las vuelva a descubrir.
 
+### Google
+
 | Tema | Qué pasa |
 |---|---|
 | `notifyPreference` | El valor correcto es `NOTIFY_ON_UPDATE`, no `NOTIFY`. La referencia REST de Google está equivocada: la API rechaza `NOTIFY` con `INVALID_ARGUMENT`. Verificado el 2026-08-12. |
 | Documentación de Google | Se contradice a sí misma en varios puntos. Ante un valor dudoso, probarlo contra la API antes que confiar en la referencia. |
 | Aprobación de clases | Las clases se aprueban solas: vuelven `approved` pese a enviarse como `UNDER_REVIEW`. Dar de alta un comercio nuevo es instantáneo. |
 | Actualización de saldo | Verificado contra la API real: el saldo se actualiza en una tarjeta ya guardada sin reemitirla. |
+| El objeto nace cuando alguien guarda | Si el objeto solo viaja en el JWT del link, no existe hasta que la persona guarda la tarjeta. Quien guardó solo en Apple, o no guardó, dejaba `addMessage` y la sincronización en 404 para siempre. Ahora se crea del lado del servidor al emitir, y ante un 404 se reconstruye y se reintenta una vez. |
+| Diseño en la clase, saldo en el objeto | Colores, logo, imagen y geocercas viven en la clase. Parchear el objeto actualiza los puntos pero no el diseño: un cambio de diseño re-registra la clase del comercio, que actualiza todas sus tarjetas de una. |
 | Tope de notificaciones | 3 por tarjeta cada 24 h, regla de Google. Apple no publica una. Se controla del lado de Sophos porque el Issuer es único para todo el ecosistema: si un comercio abusa, el throttling afecta a todos. |
-| Revocar un Pass Type ID | **No se puede** desde la API ni desde el portal. La API responde 403 con "This certificate can only be revoked by Apple Developer Program Support", y la página del certificado solo ofrece descargarlo. La única salida es abrir un caso con soporte. Verificado el 2026-09-01. |
-| `.dockerignore` | El contexto de build sube el directorio **tal como está en disco**, no lo commiteado. El `.gitignore` no protege ahí, y un secreto que entre en una capa queda en la imagen aunque se borre después. Por eso el `.dockerignore` excluye `certs/`, `.env.local` y todo `*.p8`, `*.pem` y `*.key`. |
 
-Queda sin verificar lo que requiere un teléfono Android real: las geocercas y
-el comportamiento efectivo del tope de notificaciones. El detalle de cómo
-probarlo está en [`docs/google-wallet-verificacion.md`](google-wallet-verificacion.md).
+### Apple
+
+| Tema | Qué pasa |
+|---|---|
+| Revocar un Pass Type ID | **No se puede** desde la API ni desde el portal. La API responde 403 con "This certificate can only be revoked by Apple Developer Program Support", y la página del certificado solo ofrece descargarlo. La única salida es abrir un caso con soporte. Verificado el 2026-09-01. |
+| Nombres con acento | La App Store Connect API rechaza entero un `name` con caracteres fuera de ASCII. Un comercio paraguayo con tilde o eñe es el caso normal, así que se translitera: "ElMenú" queda "ElMenu", no "ElMen". Es solo la etiqueta del portal; no toca el Pass Type ID ni lo que ve el cliente. |
+| PassKit no baja lo que no cambió | El teléfono solo vuelve a bajar el pase si `content_updated_at` avanzó, y solo pregunta si le llega un push. Un cambio que no hace las dos cosas se guarda en la base y nunca llega al iPhone. |
+| Un PNG roto tumba el pase entero | iOS rechaza el `.pkpass` completo si una imagen está corrupta, sin decir cuál. Pasó con una banda de 65 bytes que ningún test miraba: ahora los tests decodifican la imagen, no solo comprueban que esté en el zip. |
+| `primaryFields` sobre la banda | Apple los dibuja encima de la imagen. En sellos taparían los casilleros, así que ahí la cuenta va al cuerpo del pase. |
+
+### Infraestructura
+
+| Tema | Qué pasa |
+|---|---|
+| `.dockerignore` | El contexto de build sube el directorio **tal como está en disco**, no lo commiteado. El `.gitignore` no protege ahí, y un secreto que entre en una capa queda en la imagen aunque se borre después. Por eso el `.dockerignore` excluye `certs/`, `.env.local` y todo `*.p8`, `*.pem` y `*.key`. |
+| Parámetros de ruta en Fastify | Fastify los limita a 100 caracteres por defecto y un JWT mide más: la descarga del pase contestaba 414 antes de mirar la ruta. |
+| `fly ssh console -C` | Imprime "Connecting to ..." junto con la salida del comando. Capturar un secreto así le pega el banner adelante, y el 401 resultante parece "la clave está mal" cuando está mal *leída*. |
+| Build de Next en Vercel | Vercel construye cada app aislada con npm y no le llegan las devDependencies de la raíz del workspace. Por eso `apps/join` y `apps/console` declaran `typescript` y `@types/node` propios. |
+
+Queda sin verificar lo que requiere un teléfono real cerca del local: las
+geocercas en las dos plataformas y el comportamiento efectivo del tope de
+notificaciones de Google. El detalle de cómo probarlo está en
+[`docs/google-wallet-verificacion.md`](google-wallet-verificacion.md).
 
 ---
 
 ## 5. Bloqueantes que no son código
 
-Ninguno se resuelve programando. El primero bloquea el traspaso mismo; los
-otros dos son más difíciles de revertir que cualquier decisión técnica de este
-proyecto.
+Ninguno se resuelve programando. Los dos que siguen abiertos —los textos
+legales y el workspace de Fly— son más difíciles de revertir que cualquier
+decisión técnica de este proyecto.
 
 ### El repo — resuelto
 
@@ -327,7 +371,8 @@ proyecto.
 Está bajo la cuenta `SophosGroupPy` y no bajo una organización: al publicarlo,
 esa cuenta no veía ninguna organización. Conviene transferirlo cuando se
 resuelva —GitHub conserva historial e issues y redirige la URL vieja— pero no
-bloquea nada.
+bloquea nada. Mientras tanto, para pushear hace falta esa cuenta o ser
+colaborador del repo: cualquier otra recibe 403.
 
 Se verificó antes de publicar que el historial completo no tuviera claves ni
 contraseñas: los únicos matches eran textos de ejemplo de un formulario y la
@@ -369,30 +414,38 @@ La base de datos va a contener las tarjetas, saldos y datos de clientes de
 todos los comercios del ecosistema. **No va en una cuenta personal.** Va en un
 workspace a nombre de Sophos, con un segundo miembro desde el arranque.
 
-Mover una app entre organizaciones después es trabajo evitable. Conviene
-arrancar en el lugar correcto.
+Ojo con un detalle: los secretos de la app —entre ellos
+`APPLE_PASS_ENCRYPTION_KEY`, sin la cual no se descifra ninguna clave de
+firma— viven en Fly. Quien controla la cuenta de Fly controla la emisión de
+pases de todos los comercios.
 
 ---
 
 ## 6. Orden sugerido
 
-Ordenado por lo que desbloquea a lo demás, no por dificultad.
+Ordenado por lo que desbloquea a lo demás, no por dificultad. Las dos wallets
+ya están en producción; lo que queda es esto.
 
 1. **Integrar ElMenu y Noctu.** Es lo único grande que queda del producto. El
    contrato está en `docs/integracion.md` y el SDK ya trae el flujo de
    activación: `upsertMerchant`, `configureProgram` y `createEmbedToken`.
    Requiere los repos de esos productos.
 
-2. **Emitir la primera tarjeta real en Google Wallet.** El publishing access ya
-   está; la prueba de humo está en `docs/google-wallet-verificacion.md`.
-
-3. **Los dos textos legales**, antes de firmar el primer comercio. Ver más
+2. **Los dos textos legales**, antes de firmar el primer comercio. Ver más
    arriba.
 
-4. **NFC, cuando y si Apple lo apruebe.** Depende del entitlement y de
+3. **Mover la app de Fly a un workspace de Sophos**, con un segundo miembro.
+   Cuantos más comercios haya, más cuesta.
+
+4. **Automatizar la renovación de los certificados de Apple.** Tiene fecha: los
+   primeros vencen alrededor de octubre de 2027. El provisioning ya sabe
+   renovar; falta que el scheduler lo dispare para los que están por vencer.
+
+5. **Verificar las geocercas y el tope de Google en teléfonos reales.** No
+   bloquea nada, pero es lo único de las wallets que nadie vio funcionar.
+
+6. **NFC, cuando y si Apple lo apruebe.** Depende del entitlement y de
    terminales certificados. No condiciona nada.
 
-En paralelo, la lista de **pendientes antes de producción** del README sigue
-vigente: build compilado en vez de `tsx`, webhooks firmados con HMAC, el job de
-vencimiento de puntos, ajustes manuales con PIN y audit log, rate limits por
-comercio, y la auditoría periódica de saldos.
+La lista completa de lo hecho y lo que falta para producción está en la sección
+**Producción** del README; este orden es la misma lista, priorizada.

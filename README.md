@@ -280,7 +280,7 @@ Cómo se integra un producto, con el SDK y la verificación de webhooks:
 - [ ] **Los textos legales, antes de firmar el primer comercio.** El contrato
       con comercios, y que un abogado confirme la redacción del consentimiento
       `identidad/v2` (`apps/join/src/consent.ts`) contra la Ley 7593/2025.
-- [ ] **Renovar los certificados de Apple.** Vencen alrededor del año de
+- [ ] **Renovar los certificados de Apple.** Vencen a los 13 meses de
       emitidos, y un pase con el certificado vencido deja de actualizarse.
       `GET /admin/pass-certificates/expiring` los lista, pero la renovación
       todavía no la dispara el scheduler.
