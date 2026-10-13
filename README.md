@@ -150,9 +150,18 @@ Están cubiertas por tests; si alguna se rompe, la suite falla.
 
 ## Decisiones que conviene conocer antes de tocar el código
 
-- **Los multiplicadores no se acumulan entre sí: se aplica el mayor.** "Jueves
-  x2" y "cumpleaños x3" el mismo día dan x3, no x6. Multiplicarlos convertiría
-  dos promos razonables en un pasivo que el comercio no dimensionó.
+- **Los multiplicadores de promoción no se acumulan entre sí: se aplica el
+  mayor.** "Jueves x2" y "cumpleaños x3" el mismo día dan x3, no x6.
+  Multiplicarlos convertiría dos promos razonables en un pasivo que el comercio
+  no dimensionó.
+
+  **El del nivel sí se multiplica con ellos.** Un cliente Oro (x2) en el happy
+  hour (x2) suma x4. Son dos incentivos distintos —lealtad y franja— y quedarse
+  con el mayor le sacaría sentido a tener los dos. El nivel se mide con el saldo
+  con el que el cliente llega al consumo, no con el que le queda, y los topes por
+  evento y por día se aplican después de multiplicar, así que el nivel nunca los
+  rompe. `event.result` guarda `tierMultiplier` aparte, para poder explicar un
+  saldo hasta el último punto.
 
 - **El día de negocio no es el día del calendario.** Un bar con
   `dayBoundaryHour: 6` imputa el consumo de la 1 AM del sábado al viernes, que es
