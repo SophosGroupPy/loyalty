@@ -18,7 +18,7 @@ Issuer. Todos los valores en duda viven en un solo archivo:
 | **Issuer ID (Google Wallet)** | ✅ **`3388000000023171859`** |
 | Service account de GCP | ✅ `loyalty-issuer@loyalty-sophos.iam.gserviceaccount.com` |
 | Invitada en Wallet Console | ✅ rol **Developer** |
-| Publishing access | ⏳ **solicitado el 2026-08-12** |
+| Publishing access | ✅ **aprobado el 2026-08-13** (solicitado el 2026-08-12) |
 
 **Sobre el publishing access:** Google responde por mail en 2-3 días hábiles. Si
 no llega nada para el **2026-08-17**, escalar por *Contact support* en la
